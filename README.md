@@ -46,6 +46,24 @@
 
 **前置**：一个飞书自建应用（scope 见[权限](#权限)）、一台跑 DeepSeek Harness 的机器、Node 22+。
 
+### 方式一：在设置页里点（推荐）
+
+装好插件后，DSH 设置面板左栏会多一项 **「飞书连接」**，里面是四步向导：
+
+![四步向导](docs/assets/screenshots/wizard-step4.png)
+
+1. **建应用** —— 直达开放平台的链接 + 要开的 11 项权限清单，可一键复制
+2. **填凭据** —— App ID / Secret。点保存时**先校验再落盘**，凭据错不会写坏文件
+3. **选会话** —— 点「扫描我的会话」把机器人所在的群列出来点选，不用手抄 32 位 `oc_` 串
+4. **自检** —— 九项逐个真调接口：凭据文件、MCP 挂载、应用凭据、机器人身份、会话列表、目标会话、读聊天记录、上传文件、云空间
+
+![自检结果](docs/assets/screenshots/self-test.png)
+
+失败项会直接给出该开通的 scope 和跳转链接，还能「一次开通全部缺的权限」。
+自检全程不往聊天里发任何东西：读历史只读 1 条，上传只传 20 字节且不发送。
+
+### 方式二：一条命令
+
 ```bash
 pnpm install && pnpm build
 
@@ -69,6 +87,12 @@ echo '你有哪些 mcp__feishu__ 工具？只列名字' | dsh --profile headless
 ```
 
 `--uninstall` 只回滚第 3、4 步，不动你的密钥文件。可选 `--profile <名字>`（默认 `headless`）、`--dir <安装目录>`、`--skip-check`。
+
+**扫码就能建应用**：第 2 步的「扫码创建」用的是飞书官方的 [RFC 8628 设备授权流程](https://accounts.feishu.cn/oauth/v1/app/registration)。二维码里是 `open.feishu.cn/page/launcher?user_code=...`，手机上确认之后应用自动建好、App ID 与 Secret 直接写进本机 `feishu.env`——浏览器全程拿不到 secret，你也不用手抄任何一串。
+
+![扫码创建应用](docs/assets/screenshots/qr-create.png)
+
+**仍然要手动的是权限**：应用建好后按第 1 步那份清单勾选（有深链和一键复制）。飞书没有让第三方代开权限的通道，这一步省不掉。
 
 <details>
 <summary>只想挂 MCP，不要机器人</summary>

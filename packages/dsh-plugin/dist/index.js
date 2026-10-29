@@ -19,6 +19,13 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { createRequire } from 'node:module';
+/**
+ * `qrcode` 只有 CJS 产物、也没装 @types，用 createRequire 拿最省事，
+ * 比为了一个 SVG 生成器再引 @types/qrcode 干净。
+ */
+const nodeRequire = createRequire(import.meta.url);
+const QRCode = nodeRequire('qrcode');
 /** Cordis 里的插件名，用于日志/诊断。 */
 export const name = 'dsh-feishu-settings';
 /** 必需服务：只写确实要用、且在目标 profile 里必然存在的那个。 */
@@ -45,6 +52,13 @@ const MCP_SERVER_NAME = 'feishu';
 const MCP_CLIENT_PACKAGE = '@deepseek-ai/dsh-mcp-client';
 const FEISHU_ORIGIN = 'https://open.feishu.cn';
 const HTTP_TIMEOUT_MS = 15_000;
+/**
+ * 扫码创建应用的端点。这是飞书官方的 RFC 8628 设备授权流程，
+ * `@larksuiteoapi/node-sdk` 的 `registerApp()` 就是把下面两个 form 打过来：
+ *   action=begin / action=poll
+ * 这里手写而不是引那个 6MB 的 SDK —— 一共两个 POST，参数固定。
+ */
+const REGISTRATION_PATH = '/oauth/v1/app/registration';
 const IS_WINDOWS = process.platform === 'win32';
 /** env 文件里本插件负责的三个键（写入顺序固定）。 */
 const ENV_ORDER = ['FEISHU_APP_ID', 'FEISHU_APP_SECRET', 'FEISHU_DEFAULT_CHAT_ID'];
@@ -1012,6 +1026,171 @@ async function runSave(ctx, body, config, targets) {
         message: mode === 'unchanged' ? '凭据已更新；patch 里那一块本来就和现在一致。' : '已保存。重启 DSH 后生效。',
     };
 }
+/**
+ * 一次扫码尝试：device_code 留在后端，浏览器只拿 attemptId。
+ * device_code 能换出应用凭据，它不该出现在浏览器里。
+ */
+const REGISTRATIONS = new Map();
+const REGISTRATION_MAX = 20;
+function newAttemptId() {
+    return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+}
+function sweepRegistrations() {
+    const now = Date.now();
+    for (const [id, item] of REGISTRATIONS) {
+        if (item.expiresAt <= now)
+            REGISTRATIONS.delete(id);
+    }
+    while (REGISTRATIONS.size > REGISTRATION_MAX) {
+        const oldest = REGISTRATIONS.keys().next().value;
+        if (oldest === undefined)
+            break;
+        REGISTRATIONS.delete(oldest);
+    }
+}
+async function registrationRequest(origin, form) {
+    const result = await httpJson(`${origin}${REGISTRATION_PATH}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams(form).toString(),
+    });
+    return result.json;
+}
+/**
+ * 设备授权走 **accounts** 域名，不是 open-apis 的 open.feishu.cn ——
+ * 打到 open.feishu.cn 会 404。实测 `accounts.feishu.cn/oauth/v1/app/registration`
+ * 的 begin 返回：
+ *   verification_uri_complete=https://open.feishu.cn/page/launcher?user_code=XXXX-XXXX
+ *   expires_in=3600, interval=5
+ */
+function registrationOrigin(values) {
+    const domain = (values.get('FEISHU_DOMAIN') ?? values.get('LARK_DOMAIN') ?? '')
+        .trim()
+        .toLowerCase();
+    return domain.includes('larksuite')
+        ? 'https://accounts.larksuite.com'
+        : 'https://accounts.feishu.cn';
+}
+async function runRegisterBegin(ctx, targets) {
+    const env = readEnvSnapshot(targets.envPath);
+    const origin = registrationOrigin(env.values);
+    sweepRegistrations();
+    const json = await registrationRequest(origin, {
+        action: 'begin',
+        archetype: 'PersonalAgent',
+        auth_method: 'client_secret',
+        request_user_info: 'open_id',
+    });
+    if (json === null) {
+        return { ok: false, op: 'register-begin', error: '飞书没返回 JSON（网络或域名问题）' };
+    }
+    const err = asString(json['error']);
+    const url = asString(json['verification_uri_complete']);
+    const deviceCode = asString(json['device_code']);
+    if (err !== null || url === null || deviceCode === null) {
+        return {
+            ok: false,
+            op: 'register-begin',
+            error: '开始扫码失败：' +
+                (err ?? asString(json['error_description']) ?? '飞书没给二维码地址'),
+        };
+    }
+    const expireIn = asNumber(json['expires_in']) ?? 300;
+    const interval = asNumber(json['interval']) ?? 2;
+    const attemptId = newAttemptId();
+    REGISTRATIONS.set(attemptId, {
+        deviceCode,
+        origin,
+        expiresAt: Date.now() + expireIn * 1000,
+    });
+    let svg = '';
+    try {
+        svg = await QRCode.toString(url, {
+            type: 'svg',
+            margin: 1,
+            // 必须和设置页里 .qrImg 的 width 一致：SVG 自带固定 px 尺寸，比容器大就会溢出盖住文字。
+            width: 168,
+            errorCorrectionLevel: 'M',
+            color: { dark: '#000000', light: '#ffffff' },
+        });
+    }
+    catch (error) {
+        ctx.logger.warn?.('[dsh-feishu] 二维码生成失败：%s', String(error));
+    }
+    ctx.logger.info('[dsh-feishu] register-begin attempt=%s expire=%ss', attemptId, expireIn);
+    return {
+        ok: true,
+        op: 'register-begin',
+        attemptId,
+        qrUrl: url,
+        qrSvg: svg,
+        expireInSeconds: expireIn,
+        pollIntervalSeconds: interval,
+        message: svg === '' ? '二维码渲染失败，可以直接打开 qrUrl。' : null,
+    };
+}
+async function runRegisterPoll(ctx, body, targets) {
+    const attemptId = pickString(body, 'attemptId');
+    if (attemptId === null)
+        return { ok: false, op: 'register-poll', error: '缺 attemptId' };
+    const pending = REGISTRATIONS.get(attemptId);
+    if (pending === undefined) {
+        return { ok: true, op: 'register-poll', state: 'expired', error: '这次扫码已失效，重新生成二维码。' };
+    }
+    if (pending.expiresAt <= Date.now()) {
+        REGISTRATIONS.delete(attemptId);
+        return { ok: true, op: 'register-poll', state: 'expired', error: '二维码已过期，重新生成。' };
+    }
+    const json = await registrationRequest(pending.origin, {
+        action: 'poll',
+        device_code: pending.deviceCode,
+    });
+    // 网络抖动时当作「还没好」，不打断用户手上的扫码。
+    if (json === null)
+        return { ok: true, op: 'register-poll', state: 'pending' };
+    const err = asString(json['error']);
+    if (err === null || err === 'authorization_pending') {
+        return { ok: true, op: 'register-poll', state: 'pending' };
+    }
+    if (err === 'slow_down') {
+        return { ok: true, op: 'register-poll', state: 'slow_down', message: '飞书要求放慢轮询' };
+    }
+    if (err === 'expired_token') {
+        REGISTRATIONS.delete(attemptId);
+        return { ok: true, op: 'register-poll', state: 'expired', error: '二维码已过期，重新生成。' };
+    }
+    if (err === 'access_denied') {
+        REGISTRATIONS.delete(attemptId);
+        return { ok: true, op: 'register-poll', state: 'denied', error: '你在手机上取消了这次创建。' };
+    }
+    const appId = asString(json['client_id']);
+    const appSecret = asString(json['client_secret']);
+    if (appId === null || appSecret === null) {
+        REGISTRATIONS.delete(attemptId);
+        return {
+            ok: false,
+            op: 'register-poll',
+            state: 'error',
+            error: `飞书返回了意料之外的响应：${err ?? '(既没 error 也没凭据)'}`,
+        };
+    }
+    // 凭据只落本机文件、不回传浏览器：前端只需要知道应用建好了。
+    const env = readEnvSnapshot(targets.envPath);
+    const next = new Map(env.values);
+    next.set('FEISHU_APP_ID', appId);
+    next.set('FEISHU_APP_SECRET', appSecret);
+    atomicWriteFile(targets.envPath, renderEnvText(next), 0o600);
+    REGISTRATIONS.delete(attemptId);
+    ctx.logger.info('[dsh-feishu] 扫码创建应用成功 app_id=%s，凭据已写入 %s', appId, targets.envPath);
+    return {
+        ok: true,
+        op: 'register-poll',
+        state: 'succeeded',
+        appId,
+        secretTail: appSecret.slice(-4),
+        message: `已创建应用 ${appId}，凭据写进本机了。`,
+    };
+}
 /* ──────────────────────────── 向导 op ──────────────────────────── */
 async function runDiscoverChats(ctx, body, targets) {
     const env = readEnvSnapshot(targets.envPath);
@@ -1217,7 +1396,15 @@ export function apply(ctx, config) {
                     sendJson(res, 200, await runSelfTest(ctx, body, effective, targets));
                     return;
                 }
-                throw new ApiError(400, `未知 op：${op === '' ? '(空)' : op}（只支持 status / test / save / discover-chats / self-test）`);
+                if (op === 'register-begin') {
+                    sendJson(res, 200, await runRegisterBegin(ctx, targets));
+                    return;
+                }
+                if (op === 'register-poll') {
+                    sendJson(res, 200, await runRegisterPoll(ctx, body, targets));
+                    return;
+                }
+                throw new ApiError(400, `未知 op：${op === '' ? '(空)' : op}（支持 status / test / save / discover-chats / self-test / register-begin / register-poll）`);
             }
             catch (error) {
                 const status = error instanceof ApiError ? error.status : 500;

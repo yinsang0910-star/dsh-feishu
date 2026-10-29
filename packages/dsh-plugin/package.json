@@ -32,5 +32,8 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "dependencies": {
+    "qrcode": "^1.5.4"
+  }
 }

@@ -227,6 +227,29 @@ window.__ModuleLoader__.load({
       checkDetail: { color: C.faint, fontSize: 11, marginTop: 1, wordBreak: 'break-word' },
 
       link: { color: C.accent, textDecoration: 'none', cursor: 'pointer', fontSize: 11 },
+
+      /* ── 扫码创建面板 ── */
+      qrPanel: {
+        marginTop: 4,
+        marginBottom: 16,
+        padding: '10px 12px',
+        border: '1px solid ' + C.line,
+        borderRadius: 8,
+      },
+      qrHead: { display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' },
+      qrTitle: { fontSize: 12.5, fontWeight: 600 },
+      qrBody: { marginTop: 12 },
+      qrImg: {
+        width: 168,
+        height: 168,
+        background: '#fff',
+        borderRadius: 6,
+        padding: 6,
+        boxSizing: 'content-box',
+        lineHeight: 0,
+        marginBottom: 10,
+      },
+      qrSide: { fontSize: 11.5, color: C.faint, lineHeight: 1.75 },
     }
 
     /* ───────────────────────────── 常量 ───────────────────────────── */
@@ -508,6 +531,15 @@ window.__ModuleLoader__.load({
       var copied = copiedState[0]
       var setCopied = copiedState[1]
 
+      /** 扫码创建应用：qr 是二维码数据，qrPhase 是那台手机上的进度。 */
+      var qrState = react.useState(null)
+      var qr = qrState[0]
+      var setQr = qrState[1]
+
+      var qrPhaseState = react.useState('')
+      var qrPhase = qrPhaseState[0]
+      var setQrPhase = qrPhaseState[1]
+
       /** 只在第一次拿到后端状态时决定停在第几步，之后不再覆盖用户的选择。 */
       var seeded = react.useRef(false)
 
@@ -560,6 +592,73 @@ window.__ModuleLoader__.load({
       react.useEffect(function () {
         refresh(true)
       }, [refresh])
+
+      /* ── 第 2 步备用入口：扫码直接建一个应用 ── */
+
+      var onQrStart = react.useCallback(function () {
+        setQrPhase('starting')
+        setNotice({ tone: 'dim', text: '正在向飞书申请一个创建码…' })
+        callApi({ op: 'register-begin' })
+          .then(function (data) {
+            if (data.ok === false) {
+              throw new Error(data.error || '申请创建码失败（后端没给原因）')
+            }
+            setQr(data)
+            setQrPhase('waiting')
+            setNotice({
+              tone: 'dim',
+              text: '用手机飞书扫下面的码，在手机上确认创建；确认后这一步会自动完成。',
+            })
+          })
+          .catch(function (error) {
+            setQrPhase('')
+            setNotice({ tone: 'err', text: describeError(error) })
+          })
+      }, [])
+
+      /** 轮询扫码结果。成功时后端已经把凭据写进 env，这里只负责推进界面。 */
+      react.useEffect(
+        function () {
+          if (qrPhase !== 'waiting' || !qr || !qr.attemptId) return undefined
+          var stopped = false
+          var intervalMs = Math.max(2, Number(qr.pollIntervalSeconds) || 5) * 1000
+          var timer = null
+
+          function tick() {
+            if (stopped) return
+            callApi({ op: 'register-poll', attemptId: qr.attemptId })
+              .then(function (data) {
+                if (stopped) return
+                var state = data.state || ''
+                if (state === 'succeeded') {
+                  setQrPhase('succeeded')
+                  setNotice({ tone: 'ok', text: data.message || '应用已创建，凭据已写入本机。' })
+                  if (data.appId) setAppId(data.appId)
+                  setQr(null)
+                  refresh(true)
+                  setStep(3)
+                  return
+                }
+                if (state === 'expired' || state === 'denied') {
+                  setQrPhase(state)
+                  setNotice({ tone: 'warn', text: data.error || '扫码没完成' })
+                  return
+                }
+                timer = setTimeout(tick, intervalMs)
+              })
+              .catch(function () {
+                if (!stopped) timer = setTimeout(tick, intervalMs)
+              })
+          }
+
+          timer = setTimeout(tick, intervalMs)
+          return function () {
+            stopped = true
+            if (timer !== null) clearTimeout(timer)
+          }
+        },
+        [qrPhase, qr, refresh],
+      )
 
       /* ── 第 2 步：先验凭据，再落盘；验不过就不写坏数据 ── */
       var onSaveCredentials = react.useCallback(
@@ -822,14 +921,66 @@ window.__ModuleLoader__.load({
         h(
           'div',
           { style: S.cardLead },
-          '只写进本机 ' + (env && env.path ? env.path : '~/.config/dsh/feishu.env') + '，不进任何随仓库分发的文件。',
+          '只写进本机 ' +
+            (env && env.path ? env.path : '~/.config/dsh/feishu.env') +
+            '，不进任何随仓库分发的文件。',
         ),
+
+        /* ── 备选：扫码直接建一个，省掉去后台抄凭据 ── */
+        h(
+          'div',
+          { style: S.qrPanel },
+          h(
+            'div',
+            { style: S.qrHead },
+            h('span', { style: S.qrTitle }, '还没有自建应用？用手机飞书扫一下直接建一个'),
+            h(
+              ActionButton,
+              {
+                variant: qr ? 'ghost' : 'outline',
+                disabled: busyAny || qrPhase === 'starting',
+                onClick: onQrStart,
+              },
+              qrPhase === 'starting' ? '生成中…' : qr ? '换个码' : '扫码创建',
+            ),
+          ),
+          qr && (qrPhase === 'waiting' || qrPhase === 'slow_down')
+            ? h(
+                'div',
+                { style: S.qrBody },
+                h('div', {
+                  style: S.qrImg,
+                  dangerouslySetInnerHTML: { __html: qr.qrSvg || '' },
+                }),
+                h(
+                  'div',
+                  { style: S.qrSide },
+                  h('div', null, '手机飞书 → 扫一扫 → 确认创建。'),
+                  h('div', null, '确认之后应用会自动建好，凭据直接写进本机，不用你抄。'),
+                  qr.qrUrl
+                    ? h(
+                        'div',
+                        { style: { marginTop: 8 } },
+                        h(LinkButton, { href: qr.qrUrl }, '在浏览器里打开这个页面'),
+                      )
+                    : null,
+                ),
+              )
+            : null,
+          qrPhase === 'expired'
+            ? h('div', { style: S.hint }, '二维码过期了，点「换个码」重新生成。')
+            : null,
+          qrPhase === 'denied'
+            ? h('div', { style: S.hint }, '你在手机上取消了创建。可以再扫一次。')
+            : null,
+        ),
+
         h(
           Field,
           {
             label: 'App ID',
             htmlFor: 'dsh-feishu-app-id',
-            hint: hasAppId ? '已读到已保存的值：' + env.appId : 'cli_ 开头的那一串。',
+            hint: hasAppId ? '已读到已保存的值：' + env.appId + '（扫码建好的也会填在这里）' : 'cli_ 开头的那一串。',
           },
           h(TextInput, {
             id: 'dsh-feishu-app-id',
