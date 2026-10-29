@@ -165,9 +165,9 @@ describe('pushMessage · 消息缓存', () => {
     expect(got[19]!.messageId).toBe('m24');
   });
 
-  it('limit=0 时返回全部（slice(-0)===slice(0)，与直觉不符，此处锁现状）', () => {
+  it('limit=0 时返回空数组（slice(-0)===slice(0) 会把整窗都吐出来，已修）', () => {
     for (let i = 0; i < 5; i++) state.pushMessage(msg({ messageId: `m${i}`, chatId: 'oc_a' }));
-    expect(state.recentMessages('oc_a', 0)).toHaveLength(5);
+    expect(state.recentMessages('oc_a', 0)).toHaveLength(0);
   });
 
   it('总量上限 500 条，超出丢弃最旧的', () => {
@@ -243,10 +243,10 @@ describe('pushMessage · 唯一待答的自动认领', () => {
     expect(state.getAsk('t2')!.answered?.text).toBe('消息答另一个');
   });
 
-  it('senderOpenId 与 chatId 相同时不认领（防自我回声的历史判断，锁现状）', () => {
+  it('机器人自己发的消息（senderType=app）不认领', () => {
     state.registerAsk({ token: 't1', chatId: 'oc_a', question: 'q', baselineSec: 100 });
     state.pushMessage(
-      msg({ chatId: 'oc_a', createTime: 101, senderOpenId: 'oc_a', text: '回声' }),
+      msg({ chatId: 'oc_a', createTime: 101, senderType: 'app', text: '回声' }),
     );
     expect(state.getAsk('t1')!.answered).toBeUndefined();
   });

@@ -1,4 +1,4 @@
-# dsh-plugin-skeleton —— bundle patch
+# dsh-feishu 设置页 —— bundle patch
 #
 # 语义（依据 dsh-app-boot/lib/index.js:61-118 `applyEntryPatches`）：
 #   · patch 是 YAML 顶层数组，每项若含 `insert`：
@@ -10,9 +10,14 @@
 #   · 匹配不到任何行的 patch 只 warn，不会让启动失败。
 #
 # 本 profile 的 cordis.yml 是一个空 entry 列表，树由 patch 层拼出来，所以这里不带 id。
-
+#
+# config 里三个键都不写也能跑（都有默认值）：
+#   endpointPath  默认 /dsh-feishu/api —— 改这里时 client.js 里的 API 常量和它保持一致
+#   profile       不写就自动探测（config → DSH_PROFILE → argv → 模块路径 → 扫 profiles）；
+#                 profile 目录里已经有本包痕迹时能唯一命中，探测不出时设置页会让你手选
+#   envPath       默认 ~/.config/dsh/feishu.env
 - insert:
-    - id: dsh-plugin-skeleton
+    - id: dsh-feishu-settings
       name: '@dsh-feishu/dsh-plugin'
       config:
-        endpointPath: /dsh-plugin-skeleton/api
+        endpointPath: /dsh-feishu/api

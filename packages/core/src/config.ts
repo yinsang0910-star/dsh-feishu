@@ -55,10 +55,13 @@ export function loadConfig(
     throw new Error('缺少 FEISHU_APP_SECRET。请设置环境变量 FEISHU_APP_SECRET。');
   }
 
-  const domain =
+  const domainRaw =
     firstEnv(env, ['FEISHU_DOMAIN', 'LARK_DOMAIN']) ??
     fileConf.domain ??
     'https://open.feishu.cn';
+  // 在这里统一裁尾斜杠：gateway 会把 config.domain 直接交给飞书 SDK，
+  // 少裁一次就会拼出 `https://open.feishu.cn//open-apis/...`。
+  const domain = domainRaw.replace(/\/+$/, '');
   const defaultChatId =
     firstEnv(env, ['FEISHU_DEFAULT_CHAT_ID', 'LARK_DEFAULT_CHAT_ID']) ?? fileConf.defaultChatId;
 

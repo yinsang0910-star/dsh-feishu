@@ -202,11 +202,11 @@ export class FeishuApiError extends Error {
   /** 从错误信息里抽出需要的 scope，便于人直接去开放平台开 */
   get missingScopes(): string[] {
     const msg = this.message;
-    const m = msg.match(/\[\s*([a-z0-9_.:,\s]+)\]/i);
+    const m = msg.match(/\[\s*([A-Za-z0-9_.:,\-\s]+)\]/);
     if (!m || !m[1]) return [];
     return m[1]
       .split(',')
       .map((s) => s.trim())
-      .filter(Boolean);
+      .filter((s) => s.includes(':') && !s.startsWith('/'));
   }
 }

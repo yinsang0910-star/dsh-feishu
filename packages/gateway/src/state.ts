@@ -107,20 +107,22 @@ export class GatewayState {
     const open = [...this.asks.values()].filter(
       (a) => !a.answered && a.chatId === msg.chatId && msg.createTime >= a.baselineSec,
     );
-    if (open.length === 1) {
+    // 机器人自己发的消息不能当答案（原来拿 openId 去比 chatId，是个永假条件）
+    const fromBot = msg.senderType === 'app';
+    if (open.length === 1 && !fromBot) {
       const only = open[0]!;
-      if (msg.senderOpenId !== only.chatId) {
-        this.resolveAsk(only.token, {
-          text: msg.text,
-          via: 'message',
-          ...(msg.senderOpenId ? { byOpenId: msg.senderOpenId } : {}),
-          messageId: msg.messageId,
-        });
-      }
+      this.resolveAsk(only.token, {
+        text: msg.text,
+        via: 'message',
+        ...(msg.senderOpenId ? { byOpenId: msg.senderOpenId } : {}),
+        messageId: msg.messageId,
+      });
     }
   }
 
   recentMessages(chatId: string, limit = 20): CachedMessage[] {
+    // slice(-0) === slice(0)，会返回全部；limit<=0 应返回空
+    if (limit <= 0) return [];
     return this.messages.filter((m) => m.chatId === chatId).slice(-limit);
   }
 

@@ -132,13 +132,13 @@ describe('loadConfig · env 优先级', () => {
 });
 
 describe('loadConfig · domain 尾斜杠', () => {
-  it('loadConfig 本身原样保留 env 里的 domain（不做裁剪）', () => {
+  it('loadConfig 也裁掉 domain 尾斜杠（gateway 会把 config.domain 直接交给飞书 SDK）', () => {
     const cfg = loadConfig({
       FEISHU_APP_ID: 'a',
       FEISHU_APP_SECRET: 'b',
       FEISHU_DOMAIN: 'https://open.larksuite.com///',
     });
-    expect(cfg.domain).toBe('https://open.larksuite.com///');
+    expect(cfg.domain).toBe('https://open.larksuite.com');
   });
 
   it('createClient 产出的客户端会把 domain 的尾斜杠去掉（拼 URL 不会出现 //open-apis）', () => {

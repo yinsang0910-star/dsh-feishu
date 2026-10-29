@@ -377,14 +377,31 @@ describe('request · token 过期自动续期', () => {
     expect(apiCalls).toBe(2);
   });
 
-  it('maxRetries=0 时过期重试会被循环条件吃掉，落到 code=-1 兜底（已知缺陷，仅记录现状）', async () => {
+  it('maxRetries=0 时 token 过期仍会续期一次并成功（续期不占重试预算）', async () => {
+    let apiCalls = 0;
+    routeFetch({
+      api: () => {
+        apiCalls += 1;
+        // 第一次过期，续期后第二次成功
+        return apiCalls === 1
+          ? jsonResponse({ code: 99991663, msg: 'token expired' })
+          : jsonResponse({ code: 0, data: { ok: 1 } });
+      },
+    });
+    const c = makeClient({ maxRetries: 0 });
+    await expect(c.request('GET', '/x')).resolves.toEqual({ ok: 1 });
+    expect(apiCalls).toBe(2);
+  });
+
+  it('maxRetries=0 且续期后仍然过期时，把 99991663 原样抛出而不是伪装成 -1', async () => {
     routeFetch({
       api: () => jsonResponse({ code: 99991663, msg: 'token expired' }),
     });
     const c = makeClient({ maxRetries: 0 });
     const err = (await c.request('GET', '/x').catch((e) => e)) as FeishuApiError;
     expect(err).toBeInstanceOf(FeishuApiError);
-    expect(err.code).toBe(-1);
+    expect(err.code).toBe(99991663);
+    expect(err.message).not.toContain('undefined');
   });
 });
 

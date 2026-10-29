@@ -90,6 +90,11 @@ async function main(): Promise<void> {
 
   log(`事件模式=${eventsMode}`);
 
+  // 定期清理过期 ask：只靠 registerAsk 触发的话，长期没有新提问时
+  // 过期项会一直留在内存里（有界但不及时）。
+  const sweepTimer = setInterval(() => state.sweep(), 60_000);
+  sweepTimer.unref?.();
+
   const dispatcher = new Lark.EventDispatcher({});
 
   // 按钮回调：{ act: 'answer' | 'approve' | 'cancel', token, answer? }

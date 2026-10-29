@@ -146,7 +146,10 @@ export class FeishuClient {
     };
 
     let lastErr: unknown;
-    for (let attempt = 0; attempt <= this.config.maxRetries; attempt++) {
+    // token 过期时会 `continue` 重放一次，这一次数不计入 maxRetries，
+    // 否则 maxRetries=0（用户明确说"不重试"）会把可自愈的过期变成硬失败。
+    let tokenRefreshUsed = false;
+    for (let attempt = 0; ; attempt++) {
       try {
         const res = await this.fetchWithTimeout(url, init);
         const json = (await res.json()) as RawResponse;
@@ -154,12 +157,14 @@ export class FeishuClient {
           return (opts.unwrap === false ? json : (json.data ?? {})) as T;
         }
 
-        // token 过期：清缓存重试一次
-        if ((json.code === 99991663 || json.code === 99991661) && attempt === 0) {
+        // token 过期：清缓存重试一次（不消耗 attempt 预算）
+        if ((json.code === 99991663 || json.code === 99991661) && !tokenRefreshUsed) {
+          tokenRefreshUsed = true;
           this.tokenValue = '';
           this.tokenExpiresAt = 0;
           const fresh = await this.token();
           (init.headers as Record<string, string>).Authorization = `Bearer ${fresh}`;
+          attempt -= 1; // 这次重放不算重试次数
           continue;
         }
 
@@ -174,12 +179,11 @@ export class FeishuClient {
       } catch (err) {
         lastErr = err;
         if (err instanceof FeishuApiError) throw err;
-        const retriable = attempt < this.config.maxRetries;
-        if (!retriable) break;
+        if (attempt >= this.config.maxRetries) break;
         await new Promise((r) => setTimeout(r, 300 * 2 ** attempt));
       }
     }
-    const message = lastErr instanceof Error ? lastErr.message : String(lastErr);
+    const message = lastErr instanceof Error ? lastErr.message : String(lastErr ?? 'unknown');
     throw new FeishuApiError({
       code: -1,
       message: `请求失败：${message}`,

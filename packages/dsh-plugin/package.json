@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "最小 DSH 插件骨架：宿主侧一个 HTTP 端点 + 浏览器侧一个设置页入口（研究样本，不含业务功能）",
+  "description": "DSH 的飞书连接设置页：表单填 App ID / Secret / 默认会话，测试连接、保存并启用（写 feishu.env + profile patch 的 MCP 行）",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
