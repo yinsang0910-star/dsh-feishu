@@ -79,6 +79,51 @@ export interface BotInfo {
   avatarUrl?: string;
 }
 
+// ─────────────────────────── 多维表格 / 文档 / 云空间 ───────────────────────────
+
+export interface BitableTable {
+  tableId: string;
+  name: string;
+}
+
+export interface BitableField {
+  fieldId: string;
+  name: string;
+  /** 飞书字段类型码（1=文本 2=数字 3=单选 5=日期 11=人员 15=超链接 17=附件 等） */
+  type: number;
+}
+
+export interface BitableRecord {
+  recordId: string;
+  fields: Record<string, unknown>;
+}
+
+export interface DriveFile {
+  token: string;
+  name: string;
+  /** doc / docx / sheet / bitable / file / folder / mindnote */
+  type: string;
+  url?: string;
+  modifiedTime?: string;
+}
+
+export interface WikiSpace {
+  spaceId: string;
+  name: string;
+  description?: string;
+  spaceType?: string;
+}
+
+export interface WikiNode {
+  nodeToken: string;
+  /** 实际文档/表格的 token，读内容要用它 */
+  objToken: string;
+  objType: string;
+  title: string;
+  spaceId: string;
+  parentNodeToken?: string;
+}
+
 // ─────────────────────────── 卡片 ───────────────────────────
 
 /** 飞书交互卡片就是一个 JSON 结构，这里不约束内部形态 */

@@ -21,6 +21,12 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { askCard, FeishuApiError } from '@dsh-feishu/core';
 import type { FeishuMessage, FeishuUser } from '@dsh-feishu/core';
 import { ok, fail, type ToolContext } from './types.js';
+import {
+  gatewayHealth,
+  gatewayWatch,
+  gatewayAnswer,
+  gatewayForget,
+} from '../gateway-client.js';
 
 // ─────────────────────────── 小工具 ───────────────────────────
 
@@ -451,21 +457,23 @@ export function registerContextTools(server: McpServer, ctx: ToolContext): void 
     {
       title: '发问并等人回答（会阻塞）',
       description:
-        '在飞书里发一张带选项的卡片问一个问题，然后**轮询**等对方用文字回一句，把答案拿回来。' +
+        '在飞书里发一张带选项的卡片问一个问题，然后等人回答，把答案拿回来。' +
         '用在真的缺关键信息、又没法自己查的时候：要用户拍板方案、要一个他没写在文档里的参数、' +
         '要确认某个动作要不要执行。' +
         '⚠️ 这个调用会阻塞（默认 120 秒，最多 600 秒），期间什么都做不了，所以**不要滥用，一次任务最多问一两个问题**；' +
         '能靠 feishu_recent 从上下文里读出来的、能自己查到的、能用合理默认值继续的，都不要问。' +
-        'options 只是给人看的按钮快捷提示（本项目没有卡片回调长连接，按钮点了不算答案），' +
-        '真正的答案一定是轮询到的文本消息；所以问题本身要写成「一句话能答」的样子。' +
-        '返回 answered=true 时 text 就是对方的原话；answered=false 表示超时（不是报错），' +
+        '回答来源有两条：①点卡片上的选项按钮（需要网关在跑，毫秒级返回）；②对方直接打字回一句。' +
+        '两条都走不通才会超时。返回 answered=true 时 text 就是对方的原话；answered=false 表示超时（不是报错），' +
         '此时应当按默认方案继续或换个问法，不要反复重试。',
       inputSchema: {
         question: z.string().describe('要问的一句话问题。写清「需要他决定什么」，别问开放式的为什么。'),
         options: z
           .array(z.string())
           .optional()
-          .describe('建议选项（最多 5 个，多余的截断），会渲染成按钮；对方仍然可以直接打字回答。'),
+          .describe(
+            '建议选项（最多 5 个，多余的截断），会渲染成按钮。' +
+              '网关在跑时点按钮就是答案；网关不在时按钮只是提示，对方要打字回。',
+          ),
         chat_id: z
           .string()
           .optional()
@@ -520,15 +528,47 @@ export function registerContextTools(server: McpServer, ctx: ToolContext): void 
         const sent = await ctx.client.sendCard(chatId, card);
         const targetChatId = sent.chatId || chatId;
         const excludeIds = new Set<string>([sent.messageId]);
+
+        // 网关在跑就让按钮真的能用：登记 token，按钮点下来毫秒级拿到答案
+        const gwAlive = (await gatewayHealth()) !== null;
+        if (gwAlive) {
+          await gatewayWatch({ token, chatId: targetChatId, question, baselineSec });
+        }
         ctx.log(
-          `feishu_ask token=${token} 已发卡片 ${sent.messageId}，开始轮询（上限 ${timeoutSec}s / 每 ${pollMs}ms）`,
+          `feishu_ask token=${token} 已发卡片 ${sent.messageId}，` +
+            `${gwAlive ? '网关在线（按钮可用）' : '网关未运行（只能靠打字回复）'}，` +
+            `开始等待（上限 ${timeoutSec}s / 每 ${pollMs}ms）`,
         );
 
         const deadline = startedAt + timeoutSec * 1000;
         let threadId: string | null = null;
         let threadProbe = 0;
 
+        const finish = async (): Promise<void> => {
+          if (gwAlive) await gatewayForget(token);
+        };
+
         for (;;) {
+          // ⓪ 网关优先：按钮点了就在内存里，不用碰飞书消息 API
+          if (gwAlive) {
+            const ans = await gatewayAnswer(token);
+            if (ans?.answered && ans.text !== undefined) {
+              const waitedMs = Date.now() - startedAt;
+              ctx.log(`feishu_ask token=${token} 网关投递回答（${ans.via}，${waitedMs}ms）`);
+              await finish();
+              return ok(`用户回答：${ans.text}`, {
+                answered: true,
+                text: ans.text,
+                via: ans.via ?? 'button',
+                chat_id: targetChatId,
+                token,
+                waited_ms: waitedMs,
+                sender_id: ans.by ?? null,
+                ask_message_id: sent.messageId,
+              });
+            }
+          }
+
           const found: ReplyCandidate[] = [];
 
           // ① 会话主容器：绝大多数回复都在这里（包括「直接回在某个话题里」的父消息）
@@ -559,9 +599,11 @@ export function registerContextTools(server: McpServer, ctx: ToolContext): void 
           if (reply) {
             const waitedMs = Date.now() - startedAt;
             ctx.log(`feishu_ask token=${token} 等到回答 ${reply.messageId}（${waitedMs}ms）`);
+            await finish();
             return ok(`用户回答：${reply.text}`, {
               answered: true,
               text: reply.text,
+              via: 'message',
               message_id: reply.messageId,
               chat_id: targetChatId,
               token,
@@ -579,6 +621,7 @@ export function registerContextTools(server: McpServer, ctx: ToolContext): void 
           await sleep(Math.min(pollMs, remain));
         }
 
+        await finish();
         // 超时：用 fail 让调用方停下重试，但文案写清「这不是炸了，是没人回答」
         const waitedMs = Date.now() - startedAt;
         return fail(
@@ -591,6 +634,7 @@ export function registerContextTools(server: McpServer, ctx: ToolContext): void 
             chat_id: targetChatId,
             token,
             ask_message_id: sent.messageId,
+            gateway: gwAlive,
           },
         );
       } catch (err) {

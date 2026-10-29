@@ -12,8 +12,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   FeishuApiError,
+  type BitableField,
+  type BitableRecord,
+  type BitableTable,
   type BotInfo,
   type DownloadResult,
+  type DriveFile,
   type FeishuCard,
   type FeishuChat,
   type FeishuConfig,
@@ -23,6 +27,8 @@ import {
   type SendTarget,
   type SentMessage,
   type UploadResult,
+  type WikiNode,
+  type WikiSpace,
 } from './types.js';
 
 const DEFAULT_DOMAIN = 'https://open.feishu.cn';
@@ -536,6 +542,289 @@ export class FeishuClient {
       openId: String(bot.open_id ?? ''),
       name: String(bot.app_name ?? ''),
       avatarUrl: bot.avatar_url ? String(bot.avatar_url) : undefined,
+    };
+  }
+
+  // ═══════════════════════ 多维表格 ═══════════════════════
+
+  async listBitableTables(appToken: string): Promise<BitableTable[]> {
+    const data = await this.request<{ items?: Array<Record<string, unknown>> }>(
+      'GET',
+      `/bitable/v1/apps/${encodeURIComponent(appToken)}/tables`,
+      { query: { page_size: 100 } },
+    );
+    return (data.items ?? []).map((t) => ({
+      tableId: String(t['table_id'] ?? ''),
+      name: String(t['name'] ?? ''),
+    }));
+  }
+
+  async listBitableFields(appToken: string, tableId: string): Promise<BitableField[]> {
+    const data = await this.request<{ items?: Array<Record<string, unknown>> }>(
+      'GET',
+      `/bitable/v1/apps/${encodeURIComponent(appToken)}/tables/${encodeURIComponent(tableId)}/fields`,
+      { query: { page_size: 100 } },
+    );
+    return (data.items ?? []).map((f) => ({
+      fieldId: String(f['field_id'] ?? ''),
+      name: String(f['field_name'] ?? ''),
+      type: Number(f['type'] ?? 0),
+    }));
+  }
+
+  async listBitableRecords(
+    appToken: string,
+    tableId: string,
+    opts: { pageSize?: number; pageToken?: string; filter?: string } = {},
+  ): Promise<{ items: BitableRecord[]; hasMore: boolean; pageToken?: string }> {
+    const data = await this.request<{
+      items?: Array<Record<string, unknown>>;
+      has_more?: boolean;
+      page_token?: string;
+    }>(
+      'GET',
+      `/bitable/v1/apps/${encodeURIComponent(appToken)}/tables/${encodeURIComponent(tableId)}/records`,
+      {
+        query: {
+          page_size: opts.pageSize ?? 50,
+          page_token: opts.pageToken,
+          ...(opts.filter ? { filter: opts.filter } : {}),
+        },
+      },
+    );
+    return {
+      items: (data.items ?? []).map((r) => ({
+        recordId: String(r['record_id'] ?? ''),
+        fields: (r['fields'] ?? {}) as Record<string, unknown>,
+      })),
+      hasMore: Boolean(data.has_more),
+      pageToken: data.page_token,
+    };
+  }
+
+  async createBitableRecord(
+    appToken: string,
+    tableId: string,
+    fields: Record<string, unknown>,
+  ): Promise<BitableRecord> {
+    const data = await this.request<{ record?: Record<string, unknown> }>(
+      'POST',
+      `/bitable/v1/apps/${encodeURIComponent(appToken)}/tables/${encodeURIComponent(tableId)}/records`,
+      { body: { fields } },
+    );
+    const r = data.record ?? {};
+    return {
+      recordId: String(r['record_id'] ?? ''),
+      fields: (r['fields'] ?? {}) as Record<string, unknown>,
+    };
+  }
+
+  async updateBitableRecord(
+    appToken: string,
+    tableId: string,
+    recordId: string,
+    fields: Record<string, unknown>,
+  ): Promise<void> {
+    await this.request(
+      'PUT',
+      `/bitable/v1/apps/${encodeURIComponent(appToken)}/tables/${encodeURIComponent(tableId)}/records/${encodeURIComponent(recordId)}`,
+      { body: { fields } },
+    );
+  }
+
+  async deleteBitableRecord(appToken: string, tableId: string, recordId: string): Promise<void> {
+    await this.request(
+      'DELETE',
+      `/bitable/v1/apps/${encodeURIComponent(appToken)}/tables/${encodeURIComponent(tableId)}/records/${encodeURIComponent(recordId)}`,
+    );
+  }
+
+  // ═══════════════════════ 电子表格 ═══════════════════════
+
+  async createSpreadsheet(title: string, folderToken?: string): Promise<{ spreadsheetToken: string }> {
+    const data = await this.request<{ spreadsheet?: Record<string, unknown> }>(
+      'POST',
+      '/sheets/v3/spreadsheets',
+      { body: { title, ...(folderToken ? { folder_token: folderToken } : {}) } },
+    );
+    const s = data.spreadsheet ?? {};
+    return { spreadsheetToken: String(s['spreadsheet_token'] ?? '') };
+  }
+
+  async readSheetValues(
+    spreadsheetToken: string,
+    range: string,
+  ): Promise<{ values: unknown[][]; range: string }> {
+    const data = await this.request<{ valueRange?: Record<string, unknown> }>(
+      'GET',
+      `/sheets/v2/spreadsheets/${encodeURIComponent(spreadsheetToken)}/values/${encodeURIComponent(range)}`,
+    );
+    const vr = data.valueRange ?? {};
+    return {
+      values: (vr['values'] ?? []) as unknown[][],
+      range: String(vr['range'] ?? range),
+    };
+  }
+
+  // ═══════════════════════ 文档 ═══════════════════════
+
+  /** 读文档纯文本（docx 需要 docx:document:readonly 或 docx:document） */
+  async readDocumentRaw(documentId: string): Promise<string> {
+    const data = await this.request<{ content?: string }>(
+      'GET',
+      `/docx/v1/documents/${encodeURIComponent(documentId)}/raw_content`,
+      { query: { lang: 0 } },
+    );
+    return String(data.content ?? '');
+  }
+
+  /** 文档块结构（用于定位段落、做精细编辑） */
+  async listDocumentBlocks(
+    documentId: string,
+    opts: { pageSize?: number; pageToken?: string } = {},
+  ): Promise<{ items: Array<Record<string, unknown>>; hasMore: boolean; pageToken?: string }> {
+    const data = await this.request<{
+      items?: Array<Record<string, unknown>>;
+      has_more?: boolean;
+      page_token?: string;
+    }>('GET', `/docx/v1/documents/${encodeURIComponent(documentId)}/blocks`, {
+      query: { page_size: opts.pageSize ?? 100, page_token: opts.pageToken, document_revision_id: -1 },
+    });
+    return {
+      items: data.items ?? [],
+      hasMore: Boolean(data.has_more),
+      pageToken: data.page_token,
+    };
+  }
+
+  /** 新建文档（需要 docx:document:create） */
+  async createDocument(title: string, folderToken?: string): Promise<{ documentId: string }> {
+    const data = await this.request<{ document?: Record<string, unknown> }>(
+      'POST',
+      '/docx/v1/documents',
+      { body: { title, ...(folderToken ? { folder_token: folderToken } : {}) } },
+    );
+    const d = data.document ?? {};
+    return { documentId: String(d['document_id'] ?? '') };
+  }
+
+  // ═══════════════════════ 云空间 ═══════════════════════
+
+  async listDriveFiles(
+    folderToken = '',
+    pageSize = 50,
+  ): Promise<{ items: DriveFile[]; hasMore: boolean; pageToken?: string }> {
+    const data = await this.request<{
+      files?: Array<Record<string, unknown>>;
+      has_more?: boolean;
+      next_page_token?: string;
+    }>('GET', '/drive/v1/files', {
+      query: { folder_token: folderToken, page_size: pageSize },
+    });
+    return {
+      items: (data.files ?? []).map((f) => ({
+        token: String(f['token'] ?? ''),
+        name: String(f['name'] ?? ''),
+        type: String(f['type'] ?? ''),
+        url: f['url'] ? String(f['url']) : undefined,
+        modifiedTime: f['modified_time'] ? String(f['modified_time']) : undefined,
+      })),
+      hasMore: Boolean(data.has_more),
+      pageToken: data.next_page_token,
+    };
+  }
+
+  // ═══════════════════════ 知识库 ═══════════════════════
+
+  async listWikiSpaces(pageSize = 50): Promise<WikiSpace[]> {
+    const data = await this.request<{ items?: Array<Record<string, unknown>> }>(
+      'GET',
+      '/wiki/v2/spaces',
+      { query: { page_size: pageSize } },
+    );
+    return (data.items ?? []).map((s) => ({
+      spaceId: String(s['space_id'] ?? ''),
+      name: String(s['name'] ?? ''),
+      description: s['description'] ? String(s['description']) : undefined,
+      spaceType: s['space_type'] ? String(s['space_type']) : undefined,
+    }));
+  }
+
+  async getWikiNode(token: string): Promise<WikiNode> {
+    const data = await this.request<{ node?: Record<string, unknown> }>(
+      'GET',
+      '/wiki/v2/spaces/get_node',
+      { query: { token } },
+    );
+    const n = data.node ?? {};
+    return {
+      nodeToken: String(n['node_token'] ?? ''),
+      objToken: String(n['obj_token'] ?? ''),
+      objType: String(n['obj_type'] ?? ''),
+      title: String(n['title'] ?? ''),
+      spaceId: String(n['space_id'] ?? ''),
+      parentNodeToken: n['parent_node_token'] ? String(n['parent_node_token']) : undefined,
+    };
+  }
+
+  async listWikiNodes(spaceId: string, parentNodeToken = ''): Promise<WikiNode[]> {
+    const data = await this.request<{ items?: Array<Record<string, unknown>> }>(
+      'GET',
+      `/wiki/v2/spaces/${encodeURIComponent(spaceId)}/nodes`,
+      { query: { page_size: 50, parent_node_token: parentNodeToken } },
+    );
+    return (data.items ?? []).map((n) => ({
+      nodeToken: String(n['node_token'] ?? ''),
+      objToken: String(n['obj_token'] ?? ''),
+      objType: String(n['obj_type'] ?? ''),
+      title: String(n['title'] ?? ''),
+      spaceId: String(n['space_id'] ?? ''),
+      parentNodeToken: n['parent_node_token'] ? String(n['parent_node_token']) : undefined,
+    }));
+  }
+
+  // ═══════════════════════ 通讯录 ═══════════════════════
+
+  /** 邮箱 → open_id（需要 contact:user.id:readonly） */
+  async lookupUsersByEmail(emails: string[]): Promise<FeishuUser[]> {
+    const data = await this.request<{ user_list?: Array<Record<string, unknown>> }>(
+      'POST',
+      '/contact/v3/users/batch_get_id',
+      { query: { user_id_type: 'open_id' }, body: { emails } },
+    );
+    return (data.user_list ?? []).map((u) => ({
+      openId: String(u['user_id'] ?? ''),
+      email: u['email'] ? String(u['email']) : undefined,
+      name: u['name'] ? String(u['name']) : undefined,
+    }));
+  }
+
+  async lookupUsersByMobile(mobiles: string[]): Promise<FeishuUser[]> {
+    const data = await this.request<{ user_list?: Array<Record<string, unknown>> }>(
+      'POST',
+      '/contact/v3/users/batch_get_id',
+      { query: { user_id_type: 'open_id' }, body: { mobiles } },
+    );
+    return (data.user_list ?? []).map((u) => ({
+      openId: String(u['user_id'] ?? ''),
+      mobile: u['mobile'] ? String(u['mobile']) : undefined,
+      name: u['name'] ? String(u['name']) : undefined,
+    }));
+  }
+
+  async getUser(openId: string): Promise<FeishuUser> {
+    const data = await this.request<{ user?: Record<string, unknown> }>(
+      'GET',
+      `/contact/v3/users/${encodeURIComponent(openId)}`,
+      { query: { user_id_type: 'open_id' } },
+    );
+    const u = data.user ?? {};
+    return {
+      openId: String(u['open_id'] ?? openId),
+      name: u['name'] ? String(u['name']) : undefined,
+      enName: u['en_name'] ? String(u['en_name']) : undefined,
+      email: u['email'] ? String(u['email']) : undefined,
+      mobile: u['mobile'] ? String(u['mobile']) : undefined,
     };
   }
 }
