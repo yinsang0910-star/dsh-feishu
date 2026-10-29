@@ -11,6 +11,16 @@ import type { GatewayState } from './state.js';
 
 type Log = (msg: string, extra?: unknown) => void;
 
+export interface HttpOptions {
+  /**
+   * 共享密钥。设了就要求所有非 /health 请求带
+   * `Authorization: Bearer <token>` 或 `X-Gateway-Token: <token>`。
+   */
+  token?: string;
+  /** 暴露 /pending 这类调试端点；默认关闭 */
+  debug?: boolean;
+}
+
 function json(res: http.ServerResponse, status: number, body: unknown): void {
   const text = JSON.stringify(body);
   res.writeHead(status, {
@@ -18,6 +28,26 @@ function json(res: http.ServerResponse, status: number, body: unknown): void {
     'Content-Length': Buffer.byteLength(text),
   });
   res.end(text);
+}
+
+function headerValue(v: string | string[] | undefined): string {
+  if (Array.isArray(v)) return v[0] ?? '';
+  return v ?? '';
+}
+
+/**
+ * 认证策略：
+ *  - 配了 token → 必须带上它（内网跨机调用走这条）
+ *  - 没配 token → 只接受回环来源（默认安全，不需要额外配置）
+ */
+function authorized(req: http.IncomingMessage, token: string | undefined): boolean {
+  if (!token) {
+    const remote = req.socket.remoteAddress ?? '';
+    return remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1';
+  }
+  const auth = headerValue(req.headers['authorization']).replace(/^Bearer\s+/i, '');
+  const custom = headerValue(req.headers['x-gateway-token']);
+  return auth === token || custom === token;
 }
 
 async function readBody(req: http.IncomingMessage, limit = 1024 * 512): Promise<unknown> {
@@ -36,15 +66,36 @@ async function readBody(req: http.IncomingMessage, limit = 1024 * 512): Promise<
   }
 }
 
-export function createHttpServer(state: GatewayState, log: Log): http.Server {
+export function createHttpServer(
+  state: GatewayState,
+  log: Log,
+  opts: HttpOptions = {},
+): http.Server {
   return http.createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1');
     const route = `${req.method} ${url.pathname}`;
 
     void (async () => {
       try {
+        // /health 豁免认证：它只回运行时长和计数，不含任何敏感信息，
+        // 让 systemd/监控能在不带 token 的情况下探活。
         if (route === 'GET /health') {
-          return json(res, 200, { ok: true, ...state.stats() });
+          return json(res, 200, {
+            ok: true,
+            authRequired: Boolean(opts.token),
+            debug: Boolean(opts.debug),
+            ...state.stats(),
+          });
+        }
+
+        if (!authorized(req, opts.token)) {
+          log('拒绝未授权请求', { route, remote: req.socket.remoteAddress });
+          return json(res, 401, {
+            ok: false,
+            error: opts.token
+              ? '缺少或错误的网关密钥（Authorization: Bearer <token>）'
+              : '未配置网关密钥时只接受本机访问；跨机调用请设置 FEISHU_GATEWAY_TOKEN',
+          });
         }
 
         if (route === 'POST /watch') {
@@ -86,6 +137,10 @@ export function createHttpServer(state: GatewayState, log: Log): http.Server {
         }
 
         if (route === 'GET /pending') {
+          // 调试端点：默认不暴露，避免把待答 token 泄给内网任何人
+          if (!opts.debug) {
+            return json(res, 404, { ok: false, error: '调试端点未启用（设 FEISHU_GATEWAY_DEBUG=1）' });
+          }
           return json(res, 200, { ok: true, asks: state.pendingList() });
         }
 

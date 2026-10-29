@@ -530,9 +530,22 @@ export function registerContextTools(server: McpServer, ctx: ToolContext): void 
         const excludeIds = new Set<string>([sent.messageId]);
 
         // 网关在跑就让按钮真的能用：登记 token，按钮点下来毫秒级拿到答案
-        const gwAlive = (await gatewayHealth()) !== null;
+        let gwAlive = (await gatewayHealth()) !== null;
         if (gwAlive) {
-          await gatewayWatch({ token, chatId: targetChatId, question, baselineSec });
+          const watched = await gatewayWatch({
+            token,
+            chatId: targetChatId,
+            question,
+            baselineSec,
+          });
+          if (!watched) {
+            // 探活能过但 watch 被拒 —— 多半是网关配了密钥而这边没带对。
+            // 不能装没事，否则用户点按钮会石沉大海。
+            gwAlive = false;
+            ctx.log(
+              `feishu_ask token=${token} 网关 watch 被拒绝（密钥不匹配？），降级为纯轮询`,
+            );
+          }
         }
         ctx.log(
           `feishu_ask token=${token} 已发卡片 ${sent.messageId}，` +

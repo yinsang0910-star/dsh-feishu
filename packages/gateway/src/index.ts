@@ -53,12 +53,23 @@ async function main(): Promise<void> {
   const eventsMode = (process.env.FEISHU_GATEWAY_EVENTS ?? 'all').toLowerCase();
 
   const state = new GatewayState();
-  const server = createHttpServer(state, log);
+  const gwToken = (process.env.FEISHU_GATEWAY_TOKEN ?? '').trim() || undefined;
+  const gwDebug = process.env.FEISHU_GATEWAY_DEBUG === '1';
+  const server = createHttpServer(state, log, {
+    ...(gwToken ? { token: gwToken } : {}),
+    ...(gwDebug ? { debug: true } : {}),
+  });
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
     server.listen(port, host, () => resolve());
   });
-  log(`HTTP 就绪 http://${host}:${port}`);
+  log(
+    `HTTP 就绪 http://${host}:${port}` +
+      (gwToken
+        ? ' · 已启用网关密钥'
+        : ' · 未设密钥（只接受本机访问；跨机调用请设 FEISHU_GATEWAY_TOKEN）') +
+      (gwDebug ? ' · 调试端点已开' : ''),
+  );
 
   // ── 模式二：不持有长连接 ───────────────────────────────────────────
   // 已经有人持有长连接时（比如旧的 Python bot），网关只做"答案中转站"：

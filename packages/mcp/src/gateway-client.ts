@@ -28,6 +28,16 @@ export function gatewayUrl(): string {
   return (process.env.FEISHU_GATEWAY_URL ?? DEFAULT_URL).replace(/\/+$/, '');
 }
 
+/** 网关共享密钥（可选）。网关没配密钥时只接受本机访问，本机调用不需要它。 */
+function gatewayToken(): string {
+  return (process.env.FEISHU_GATEWAY_TOKEN ?? '').trim();
+}
+
+export function gatewayHeaders(): Record<string, string> {
+  const t = gatewayToken();
+  return t ? { Authorization: `Bearer ${t}` } : {};
+}
+
 async function request<T>(
   path: string,
   init: RequestInit = {},
@@ -36,7 +46,11 @@ async function request<T>(
   try {
     const res = await fetch(`${gatewayUrl()}${path}`, {
       ...init,
-      headers: { 'Content-Type': 'application/json', ...(init.headers ?? {}) },
+      headers: {
+        'Content-Type': 'application/json',
+        ...gatewayHeaders(),
+        ...(init.headers ?? {}),
+      },
       signal: AbortSignal.timeout(timeoutMs),
     });
     if (!res.ok) return null;
