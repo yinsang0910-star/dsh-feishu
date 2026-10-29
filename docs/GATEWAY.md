@@ -9,34 +9,64 @@ MCP 是**请求-响应**模型：工具调用了就得返回，拿不到飞书�
 
 网关就是一个常驻进程，持有 WebSocket 长连接，把「按钮点了」这件事按 **token** 精确投递给对应的那次提问。
 
-## 架构
+## 两种运行模式
+
+### 模式一：NO_WS（推荐，也是当前生产用的）
+
+`FEISHU_GATEWAY_NO_WS=1` —— 网关**不持有长连接**，只开着 HTTP，当「答案中转站」。
+
+适用场景：**已经有别的东西持有长连接**。在 600G2 这套里就是 `/opt/feishu-bot` 的 Python bot —— 它本来就在处理 `card.action.trigger`（用于审批按钮），只要让它把 `answer` 类型的按钮转发过来即可：
+
+```python
+# bot.py 的 on_card_action 里
+ask_token = str(val.get("token") or "")
+if act == "answer" and ask_token:
+    r = gateway_post("/answer", {
+        "token": ask_token,
+        "text": str(val.get("answer") or ""),
+        "via": "button",
+        "by": by,
+    })
+    if r and r.get("accepted"):
+        mark_ask_answered(ev.context.open_message_id, answer_text, by)  # 卡片改成「已回答」
+```
+
+**好处**：同一个飞书应用的多条长连接会争抢事件，这样只保留一条，零冲突。生产环境实测通过（2026-10-30）。
+
+### 模式二：自持长连接
+
+不带 `FEISHU_GATEWAY_NO_WS` 时，网关自己连 WebSocket，订阅 `card.action.trigger` 和（可选）`im.message.receive_v1`。
+
+适用场景：没有别人持有长连接。**这时必须先停掉旧 bot**，否则事件会被两边争抢。
+
+## ⚠️ 两模式不能混
+
+- 模式二和旧 bot 同时跑 → 事件随机丢失
+- 模式一 + bot 转发 → 正确用法
+
+## 架构（模式一）
 
 ```
 飞书服务端
-   │  WebSocket（长连接）
+   │  WebSocket（只有 bot.py 这一条）
    ▼
-feishu-gateway（常驻，1 个进程）
-   ├─ card.action.trigger  ──► 按 token 投递答案
-   ├─ im.message.receive_v1 ─► 缓存最近消息 + 唯一待答时兜底认领
-   └─ HTTP 127.0.0.1:18642
-            ▲
-            │ /watch → /answer → /forget
-            │
-   feishu-mcp（每个 DSH 会话一个，短生命周期）
-            │
-        feishu_ask：先问网关（毫秒级），再轮询消息兜底
+feishu-bot（Python，PVE）
+   ├─ 消息 → DSH（原有职责不变）
+   └─ card.action.trigger
+        ├─ 审批按钮 → 自己处理
+        └─ answer 按钮 → POST http://<agent>:18642/answer
+                              │
+                              ▼
+                    feishu-gateway（NO_WS，agent 上）
+                              ▲
+                              │ /watch → /answer → /forget
+                              │
+                       feishu-mcp（每个 DSH 会话一个）
+                              │
+                       feishu_ask：先问网关（毫秒级），再轮询消息兜底
 ```
 
 **网关没跑也不影响使用**：`gateway-client` 探测超时 800ms，探不到就走原来的纯轮询路径，只是按钮回到「装饰」状态。
-
-## ⚠️ 切换前必须知道的冲突
-
-**同一个飞书应用的多条长连接会争抢事件。** 网关和旧的 Python bot（`/opt/feishu-bot`）同时跑，消息事件会随机分给其中一个 —— 表现就是「有时收到、有时收不到」。
-
-所以：
-
-- **网关不接管生产之前，不要启动它**（本仓库交付时它就是没启动的状态）
-- 真要切换，必须**先停旧 bot**
 
 ## 切换步骤
 

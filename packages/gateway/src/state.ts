@@ -80,6 +80,17 @@ export class GatewayState {
     return this.asks.get(token);
   }
 
+  /** 本地调试用：列出还在等的提问（不含答案正文，避免日志泄漏） */
+  pendingList(): Array<{ token: string; chatId: string; ageMs: number; answered: boolean }> {
+    const now = Date.now();
+    return [...this.asks.values()].map((a) => ({
+      token: a.token,
+      chatId: a.chatId,
+      ageMs: now - a.createdAt,
+      answered: Boolean(a.answered),
+    }));
+  }
+
   dropAsk(token: string): void {
     this.asks.delete(token);
   }

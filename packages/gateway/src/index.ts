@@ -58,7 +58,26 @@ async function main(): Promise<void> {
     server.once('error', reject);
     server.listen(port, host, () => resolve());
   });
-  log(`HTTP 就绪 http://${host}:${port} · 事件模式=${eventsMode}`);
+  log(`HTTP 就绪 http://${host}:${port}`);
+
+  // ── 模式二：不持有长连接 ───────────────────────────────────────────
+  // 已经有人持有长连接时（比如旧的 Python bot），网关只做"答案中转站"：
+  // 对方收到 card.action 后 POST /answer 过来，MCP 这边 /answer 一问即得。
+  // 好处：同一个飞书应用的多条长连接不会互相抢事件。
+  const noWs = process.env.FEISHU_GATEWAY_NO_WS === '1';
+  if (noWs) {
+    log('NO_WS 模式：只开 HTTP。请让持有长连接的一方把卡片回调 POST 到 /answer');
+    const shutdownHttp = (sig: string): void => {
+      log(`${sig} 收到，关闭`);
+      server.close();
+      process.exit(0);
+    };
+    process.on('SIGINT', () => shutdownHttp('SIGINT'));
+    process.on('SIGTERM', () => shutdownHttp('SIGTERM'));
+    return;
+  }
+
+  log(`事件模式=${eventsMode}`);
 
   const dispatcher = new Lark.EventDispatcher({});
 

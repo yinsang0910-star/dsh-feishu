@@ -85,9 +85,53 @@ export function createHttpServer(state: GatewayState, log: Log): http.Server {
           return json(res, 200, { ok: true, answered: false, known: true });
         }
 
+        if (route === 'GET /pending') {
+          return json(res, 200, { ok: true, asks: state.pendingList() });
+        }
+
         if (route === 'POST /forget') {
           const body = (await readBody(req)) as { token?: string };
           if (body.token) state.dropAsk(body.token);
+          return json(res, 200, { ok: true });
+        }
+
+        // 外部投递：给"已经有人持有长连接"的场景用。
+        // 典型是旧的 Python bot —— 它本来就在处理 card.action，只要把 answer 转发到这里，
+        // 网关就不用再抢一条长连接（同一 app 的多条连接会争抢事件）。
+        if (route === 'POST /answer') {
+          const body = (await readBody(req)) as {
+            token?: string;
+            text?: string;
+            via?: 'button' | 'message';
+            by?: string;
+          };
+          if (!body.token || body.text === undefined) {
+            return json(res, 400, { ok: false, error: '缺 token 或 text' });
+          }
+          const accepted = state.resolveAsk(body.token, {
+            text: body.text,
+            via: body.via === 'message' ? 'message' : 'button',
+            ...(body.by ? { byOpenId: body.by } : {}),
+          });
+          log('外部投递答案', { token: body.token, accepted, text: body.text.slice(0, 40) });
+          return json(res, 200, { ok: true, accepted });
+        }
+
+        if (route === 'POST /push') {
+          // 外部推送一条消息进缓存（给没有长连接、但想贡献上下文的一方用）
+          const body = (await readBody(req)) as Record<string, unknown>;
+          if (!body['chatId'] || !body['messageId']) {
+            return json(res, 400, { ok: false, error: '缺 chatId 或 messageId' });
+          }
+          state.pushMessage({
+            messageId: String(body['messageId']),
+            chatId: String(body['chatId']),
+            msgType: String(body['msgType'] ?? 'text'),
+            createTime: Number(body['createTime'] ?? Date.now()),
+            text: String(body['text'] ?? ''),
+            ...(body['senderOpenId'] ? { senderOpenId: String(body['senderOpenId']) } : {}),
+            ...(body['senderType'] ? { senderType: String(body['senderType']) } : {}),
+          });
           return json(res, 200, { ok: true });
         }
 
