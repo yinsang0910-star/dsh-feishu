@@ -16,7 +16,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const SERVER = path.join(ROOT, 'packages', 'mcp', 'dist', 'server.js');
+// 可以直接测打包后的单文件：SMOKE_SERVER=dist-single/dsh-feishu-mcp.mjs
+const SERVER = process.env.SMOKE_SERVER
+  ? path.resolve(ROOT, process.env.SMOKE_SERVER)
+  : path.join(ROOT, 'packages', 'mcp', 'dist', 'server.js');
 
 const args = process.argv.slice(2);
 const WRITE = args.includes('--write');

@@ -1,5 +1,6 @@
 node_modules/
 dist/
+dist-single/
 *.log
 .env
 .env.*
@@ -9,3 +10,4 @@ dist/
 coverage/
 .vitest/
 .tmp/
+downloads/
