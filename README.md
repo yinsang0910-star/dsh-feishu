@@ -58,7 +58,7 @@
 | 工具 | 作用 | 关键参数 |
 | --- | --- | --- |
 | `feishu_recent` | 读会话最近消息，时间正序，默认过滤机器人自己发的 | `chat_id?`、`limit?`、`since_minutes?`、`include_bot?`、`format?` |
-| `feishu_ask` | 发问并**阻塞**等人回答（轮询，默认 120s，上限 600s） | `question`、`options?`、`chat_id?`、`timeout_seconds?`、`poll_interval_seconds?` |
+| `feishu_ask` | 发问并**阻塞**等人回答。网关在跑时按钮点了就返回；否则轮询文字回复（默认 120s，上限 600s） | `question`、`options?`、`chat_id?`、`timeout_seconds?`、`poll_interval_seconds?` |
 
 ### 通讯录（`packages/mcp/src/tools/directory.ts`）
 
@@ -66,6 +66,28 @@
 | --- | --- | --- |
 | `feishu_chats` | 列出机器人所在的会话（只回文本，不发消息） | `limit?`（默认 20，上限 100）、`with_members?` |
 | `feishu_members` | 列出某个会话的成员（名字 + open_id） | `chat_id?`、`limit?`（默认 50，上限 100） |
+
+### 多维表格与电子表格（`packages/mcp/src/tools/bitable.ts`）
+
+| 工具 | 作用 | 关键参数 |
+| --- | --- | --- |
+| `feishu_bitable_tables` | 列出一张多维表格里的数据表 | `app_token` |
+| `feishu_bitable_fields` | 字段定义 + 类型码 + 该类型该传什么形态 | `app_token`、`table_id` |
+| `feishu_bitable_records` | 查记录，单元格渲染成人话，支持翻页 | `app_token`、`table_id`、`limit?`、`page_token?` |
+| `feishu_bitable_add` | 新增记录 | `app_token`、`table_id`、`fields` |
+| `feishu_bitable_update` | 按 `record_id` 部分更新 | `app_token`、`table_id`、`record_id`、`fields` |
+| `feishu_sheet_create` | 新建电子表格，回 token + 链接 | `title`、`folder_token?` |
+
+### 文档 / 云空间 / 知识库 / 通讯录（`packages/mcp/src/tools/docs.ts`）
+
+| 工具 | 作用 | 关键参数 | 需要的 scope |
+| --- | --- | --- | --- |
+| `feishu_drive_list` | 列云空间文件，类型翻中文并提示下一步该用哪个工具 | `folder_token?`、`limit?` | `drive:drive` |
+| `feishu_doc_read` | 读文档纯文本 | `document_id`、`max_chars?` | `docx:document:readonly`（**当前未开通**） |
+| `feishu_doc_create` | 新建文档 | `title`、`folder_token?` | `docx:document:create`（**当前未开通**） |
+| `feishu_wiki_spaces` | 列知识库空间（空列表会解释原因） | `limit?` | `wiki:wiki:readonly` |
+| `feishu_wiki_node` | 查节点详情 / 列子节点 | `token?`、`space_id?` | `wiki:wiki:readonly` |
+| `feishu_user_lookup` | 邮箱·手机 → open_id，或按 open_id 查详情 | `emails?`、`mobiles?`、`open_id?` | `contact:user.id:readonly` |
 
 ---
 
