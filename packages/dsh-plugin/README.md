@@ -528,3 +528,91 @@ node .tmp\dsh-plugin-manifest-check.mjs   # 14/14，清单 + patch 结构
 - 要 **一个 UI**：`dsh.client.platform="web"` + `exports["./client"]` + 手写 `window.__ModuleLoader__.load({id:包名, factory})`。
 - 要 **一个设置页**：bundle 里 `ctx.slots.inject('settings.section', () => ctx.slots.register({name:'settings.section', id, order, label}, 组件))`。
 - 别把不确定的服务名塞进 `inject`。
+
+---
+
+## 8. 骨架已做成「飞书连接」设置页（2026-10-30）
+
+前 7 节的机制研究全部保留、结论未变；变的是第 6 节那个 197 行骨架——它现在是一个能用的设置页。
+下面只记**新增事实**与**验证边界**。
+
+### 8.1 文件（含行数）
+
+| 文件 | 行数 | 说明 |
+|---|---|---|
+| `src/index.ts` | 1091 | host 半侧：一条 `POST /dsh-feishu/api`，body 的 `op` ∈ `status` / `test` / `save` |
+| `client.js` | 599 | 浏览器半侧：手写 CJS factory，注册 `settings.section` 的「飞书连接」页 |
+| `cordis.patch.yml` | 23 | bundle patch：entry id `dsh-feishu-settings`，`config.endpointPath=/dsh-feishu/api` |
+| `package.json` | 36 | 清单；**零 dependencies**、零 `@deepseek-ai/dsh*` peer（仍避开 §1.4 的版本闸） |
+| `dist/index.js` | 875（生成） | `pnpm --filter @dsh-feishu/dsh-plugin build` 产物。`dist/` 在 `.gitignore` 里，新 clone 必须先 build |
+
+### 8.2 三个 op 的行为
+
+- **`status`**：读凭据文件 + `<profile>/cordis.patch.yml`，回
+  `configured` / `env{path,exists,appId,chatId,hasSecret,secretTail,fileMode,modeApplied}` /
+  `profile{name,source,dir,patchPath,patchExists,managedBlock,mcpMounted,wrapperPath,wrapperExists}` /
+  `profiles[]` / `hints[]`。**secret 只回末 4 位**（实测：响应全文不含 secret 也不含其前 8 位）。
+- **`test`**：`/open-apis/auth/v3/tenant_access_token/internal` → 可选 `/open-apis/im/v1/chats/{id}`。
+  凭据错 → `ok:false` + `feishu{code,msg}`；凭据对但会话查不到 → `ok:true` + `chat.ok:false` + `warning`；
+  网络/超时 → 502 + 中文原因。支持只传表单里的 appId/secret（不必先保存）。
+- **`save`**：**先解析 profile，解析不到整单失败**（不留半写状态）→ 原子写 `<envPath>`（0600，先 `.tmp` 再 rename）
+  → 幂等维护 managed block（`created` / `updated` / `unchanged`，只有非 `unchanged` 才生成 `.bak-feishu-<ts>` 备份）。
+  chatId 传空字符串表示从 env 里删掉该键；secret 留空表示沿用已存的那份。
+  最后按需补写 MCP 启动包装（`<dir>/dsh-feishu-mcp.mjs` 在才写，已存在绝不覆盖，内容只 source 凭据文件、不含 secret），
+  结果里回 `wrapper{path,written,skipped}`——否则用户点完「保存并启用」会得到一个起不来的 MCP。
+
+### 8.3 profile 探测（新增的不确定性，如实写出来）
+
+§5.3 那条「别把不确定的东西硬塞进去」同样适用于**路径**：写到错的 profile 比不写更糟。
+所以按可靠性降序探测，并在 `status.profile.source` 里如实回传是哪条命中的：
+
+1. `config.profileDir`（patch 里写死目录，最确定）
+2. `config.profile`
+3. `env.DSH_PROFILE` / `env.DSH_PROFILE_NAME`
+4. `process.argv` 里的 `--profile <name>` / `--profile=<name>`
+5. 本模块 URL 里的 `profiles/<name>/` 段（junction 安装时可能已被 realpath 化，靠不住）
+6. 扫 `$DSH_HOME/profiles/*`：取唯一提到本包的那个；都没提到且只有一个 profile 时用它
+
+`ambiguous` / `unresolved` 时**不猜**：设置页会显示 profile 下拉框让人手选（`save` 请求可带 `profile`）。
+
+### 8.4 本轮实际跑过的验证
+
+| 项 | 结果 |
+|---|---|
+| `pnpm --filter @dsh-feishu/dsh-plugin typecheck` | ✅ 0 错误 |
+| `build` + `node --check dist/index.js` + `node --check client.js` | ✅ |
+| 后端离线测试（假 ctx + 真 `node:http` + mock fetch + 临时目录） | ✅ **76/76** |
+| 前端离线冒烟（最小 hooks 渲染器真跑 `factory` 并驱动点击） | ✅ **54/54** |
+| 生成的 patch 用 DSH 自带 `js-yaml` 解析 | ✅ **26/26** |
+| 真机装进 profile、浏览器里真看到那一节 | ❌ **未验证**（本轮硬性要求不改 `~/.dsh`） |
+
+后端覆盖点：`GET`→405、坏 JSON→400、未知 op→400、`Origin` 跨源→403（**非回环分支仍未覆盖**，本机造不出非回环请求）、
+secret 不进日志也不进响应、`.tmp` 无残留、`[]` 占位被替换而用户原有 patch 条目完整保留、
+`save` 幂等（第二次 `unchanged` 且文件逐字节不变、块只出现一次）、`profile` 带 `../` 被拒、dispose 后路由注销、
+`save` 的包装补写三分支（入口脚本缺→跳过并说明／就位→写出且内容不含 secret／已存在→不覆盖）。
+前端覆盖点：`id` 必须等于包名、`register({name,id,order,label}, 组件)` 的四个键、首渲染 + `status` 回填、
+填表 → 测试连接（请求体带 appId/secret/chatId）→ 提示文案、保存并启用（带 profile、清空 secret 框）、
+失败三分支（业务错误 / 网络错误 / 非 JSON）、primitives 缺失时降级为原生元素、primitives 可用时走官方 `Button`/`Input`。
+
+### 8.5 用户侧装法（两步，仍是 §6.2 的 A 方案）
+
+```powershell
+# 1) junction：包必须在 profile 的 node_modules 下，Loader 才 import 得到
+cmd /c mklink /J "C:\Users\<你>\.dsh\profiles\<profile>\node_modules\@dsh-feishu\dsh-plugin" "D:\dsh-feishu\packages\dsh-plugin"
+```
+
+```yaml
+# 2) 追加到 ~/.dsh/profiles/<profile>/cordis.patch.yml
+#    （文件里如果是 `[]` 占位，要先把它删掉，否则插进去不是合法数组项）
+- insert:
+    - id: dsh-feishu-settings
+      name: '@dsh-feishu/dsh-plugin'
+      config:
+        endpointPath: /dsh-feishu/api
+        profile: <profile>        # 可选：自动探测不准时写死
+```
+
+重启 DSH 后：`%DSH_HOME%\dsh-web.log` 应出现
+`[dsh-feishu] enabled; HTTP route = /dsh-feishu/api` 与 `[dsh-feishu] 凭据文件 = …`，
+设置面板菜栏多一项「飞书连接」。想省掉手写 patch 这步，也可以直接点「保存并启用」——
+它写的 block 和 `scripts/install.mjs` 是同一对哨兵行，两边可以互相接手。

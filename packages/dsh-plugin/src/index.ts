@@ -527,8 +527,53 @@ function applyManagedBlock(
   return { text: stripped === '' ? `${block}\n` : `${stripped}\n\n${block}\n`, mode: 'created' }
 }
 
-/* ──────────────────────────── 飞书 API ──────────────────────────── */
+/* ──────────────────────────── MCP 启动包装 ──────────────────────────── */
 
+interface WrapperOutcome {
+  path: string
+  written: boolean
+  /** 没写时说明原因（用户可见）。 */
+  skipped: string | null
+}
+
+/**
+ * 按需补写 MCP 启动包装（与 scripts/install.mjs 同款内容）：它只把凭据文件 source 进环境，
+ * 自身**不含 secret**。已存在就绝不覆盖（那是用户的东西）；入口脚本不在就只跳过并说明。
+ */
+function ensureWrapper(targets: Targets): WrapperOutcome {
+  if (statOrNull(targets.wrapperPath) !== null) {
+    return { path: targets.wrapperPath, written: false, skipped: null }
+  }
+  const entryPath = path.join(path.dirname(targets.wrapperPath), 'dsh-feishu-mcp.mjs')
+  if (statOrNull(entryPath) === null) {
+    return {
+      path: targets.wrapperPath,
+      written: false,
+      skipped: `同目录下的 ${path.basename(entryPath)} 不存在，所以没有生成启动包装`,
+    }
+  }
+  const content = IS_WINDOWS
+    ? [
+        '@echo off',
+        'rem dsh-feishu MCP 启动包装：凭据从 feishu.env 读，不落进任何 YAML',
+        `for /f "usebackq tokens=1,* delims==" %%a in ("${targets.envPath}") do set "%%a=%%b"`,
+        `node "${entryPath}"`,
+        '',
+      ].join('\r\n')
+    : [
+        '#!/usr/bin/env bash',
+        '# dsh-feishu MCP 启动包装：凭据从 feishu.env 读，不落进任何 YAML',
+        'set -a',
+        `. "${targets.envPath}"`,
+        'set +a',
+        `exec "${process.execPath}" "${entryPath}"`,
+        '',
+      ].join('\n')
+  atomicWriteFile(targets.wrapperPath, content, IS_WINDOWS ? 0o644 : 0o755)
+  return { path: targets.wrapperPath, written: true, skipped: null }
+}
+
+/* ──────────────────────────── 飞书 API ──────────────────────────── */
 interface FetchResponseLike {
   status: number
   ok: boolean
@@ -688,8 +733,12 @@ function statusReport(config: PluginConfig, targets: Targets): Record<string, un
     hints.push('MCP 还没挂进 patch：点「保存并启用」会幂等写入。')
   }
   if (!wrapperExists) {
+    const entryExists =
+      statOrNull(path.join(path.dirname(targets.wrapperPath), 'dsh-feishu-mcp.mjs')) !== null
     hints.push(
-      `MCP 启动包装不存在（${targets.wrapperPath}）：挂上后会起不来，先跑 node scripts/install.mjs 或把 dist-single/dsh-feishu-mcp.mjs 拷到同目录。`,
+      entryExists
+        ? `MCP 启动包装不存在（${targets.wrapperPath}）：点「保存并启用」会按需补写（它只 source 凭据文件）。`
+        : `MCP 启动包装和入口脚本都不在（${path.dirname(targets.wrapperPath)}）：先把 dist-single/dsh-feishu-mcp.mjs 拷进去，或跑 node scripts/install.mjs。`,
     )
   }
   if (IS_WINDOWS) {
@@ -939,10 +988,13 @@ async function runSave(
   }
 
   const patchSnapshot = readPatchSnapshot(patchPath)
+  const wrapper = ensureWrapper(targets)
   const warnings: string[] = []
-  if (statOrNull(targets.wrapperPath) === null) {
+  if (wrapper.written) {
+    warnings.push('已顺带写好 MCP 启动包装（只 source 凭据文件，不含 secret）。')
+  } else if (wrapper.skipped !== null) {
     warnings.push(
-      `MCP 启动包装不存在（${targets.wrapperPath}）：重启后 MCP 会连接失败，先跑 node scripts/install.mjs。`,
+      `${wrapper.path} 没有生成：${wrapper.skipped}。先跑 node scripts/install.mjs，或把 dist-single/dsh-feishu-mcp.mjs 拷到该目录。`,
     )
   }
   if (IS_WINDOWS) {
@@ -972,6 +1024,7 @@ async function runSave(
       managedBlock: patchSnapshot.hasBlock,
       mcpMounted: patchSnapshot.mcpMounted,
     },
+    wrapper: { path: wrapper.path, written: wrapper.written, skipped: wrapper.skipped },
     warnings,
     restartRequired: mode !== 'unchanged',
     message: mode === 'unchanged' ? '凭据已更新；patch 里那一块本来就和现在一致。' : '已保存。重启 DSH 后生效。',
