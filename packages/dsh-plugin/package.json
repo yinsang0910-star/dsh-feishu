@@ -1,9 +1,24 @@
 {
   "name": "@dsh-feishu/dsh-plugin",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yinsang0910-star/dsh-feishu.git",
+    "directory": "packages/dsh-plugin"
+  },
+  "homepage": "https://github.com/yinsang0910-star/dsh-feishu#readme",
+  "license": "MIT",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
-  "description": "DSH 的飞书连接设置页：表单填 App ID / Secret / 默认会话，测试连接、保存并启用（写 feishu.env + profile patch 的 MCP 行）",
+  "description": "DeepSeek Harness 的飞书连接设置页：四步向导（建应用 / 凭据 / 选会话 / 自检），支持扫码直接创建飞书应用",
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "feishu",
+    "lark"
+  ],
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
@@ -18,7 +33,8 @@
     "dist",
     "client.js",
     "cordis.patch.yml",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "dsh": {
     "bundle": {
@@ -32,7 +48,6 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
-  "license": "MIT",
   "dependencies": {
     "qrcode": "^1.5.4"
   }

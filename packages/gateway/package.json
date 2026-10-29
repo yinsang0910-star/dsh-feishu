@@ -1,14 +1,23 @@
 {
   "name": "@dsh-feishu/gateway",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yinsang0910-star/dsh-feishu.git",
+    "directory": "packages/gateway"
+  },
+  "homepage": "https://github.com/yinsang0910-star/dsh-feishu#readme",
+  "license": "MIT",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
   "description": "常驻长连接网关：收飞书卡片回调与消息事件，供 MCP server 查询",
   "main": "./dist/index.js",
   "bin": {
     "dsh-feishu-gateway": "./dist/index.js"
   },
-  "files": ["dist"],
+  "files": ["dist", "README.md", "LICENSE"],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",

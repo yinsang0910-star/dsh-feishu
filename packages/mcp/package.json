@@ -1,14 +1,23 @@
 {
   "name": "@dsh-feishu/mcp",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yinsang0910-star/dsh-feishu.git",
+    "directory": "packages/mcp"
+  },
+  "homepage": "https://github.com/yinsang0910-star/dsh-feishu#readme",
+  "license": "MIT",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
   "main": "./dist/server.js",
   "types": "./dist/server.d.ts",
   "bin": {
     "dsh-feishu-mcp": "./dist/server.js"
   },
-  "files": ["dist"],
+  "files": ["dist", "README.md", "LICENSE"],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
