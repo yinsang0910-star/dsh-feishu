@@ -1,0 +1,21 @@
+{
+  "allowed_open_ids": [
+    "ou_0000000000000000000000000000000a",
+    "ou_0000000000000000000000000000000b"
+  ],
+  "setup_token": "claim-change-me",
+  "report_hour": 8,
+  "soft_timeout_sec": 1800,
+  "max_inline_lines": 30,
+  "agent_host": "192.168.1.205",
+  "agent_user": "agent",
+  "agent_key": "/root/.ssh/agent_rsa",
+  "agent_cwd": "/home/agent/work",
+  "agent_root": "/home/agent/work",
+  "dsh_cmd": "/home/agent/.local/bin/dsh-task",
+  "pve_host": "127.0.0.1",
+  "report_chat_id": "oc_0000000000000000000000000000000",
+  "group_chat_id": "oc_0000000000000000000000000000000",
+  "gateway_url": "http://192.168.1.205:18642",
+  "gateway_token": ""
+}

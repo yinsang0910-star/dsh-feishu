@@ -1,0 +1,8 @@
+# bot.py 跑在 Linux 上，且 deploy.ps1 用 md5 判断「本地/远端是否同一份」。
+# 如果 checkout 时被转成 CRLF，md5 就永远对不上。必须锁 LF。
+*.py text eol=lf
+*.sh text eol=lf
+
+# Windows 侧脚本保持 CRLF
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
