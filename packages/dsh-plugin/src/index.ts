@@ -604,7 +604,7 @@ interface FetchResponseLike {
 interface FetchInitLike {
   method?: string
   headers?: Record<string, string>
-  body?: string
+  body?: string | Uint8Array
   signal?: AbortSignal
 }
 type FetchLike = (url: string, init?: FetchInitLike) => Promise<FetchResponseLike>
@@ -725,6 +725,243 @@ async function fetchChatName(origin: string, token: string, chatId: string): Pro
   const data = asRecord(json['data'])
   const name = data === null ? null : asString(data['name'])
   return { ok: true, name, code: 0, msg: null }
+}
+
+/* ──────────────────────────── 会话发现 ──────────────────────────── */
+
+interface ChatSummary {
+  chatId: string
+  name: string | null
+  description: string | null
+  userCount: number | null
+  chatMode: string | null
+  external: boolean
+}
+
+interface ChatsResult {
+  ok: boolean
+  chats: ChatSummary[]
+  hasMore: boolean
+  code: number | null
+  msg: string | null
+}
+
+async function listBotChats(origin: string, token: string): Promise<ChatsResult> {
+  const result = await httpJson(`${origin}/open-apis/im/v1/chats?page_size=100`, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  const json = result.json
+  if (json === null) {
+    return {
+      ok: false,
+      chats: [],
+      hasMore: false,
+      code: null,
+      msg: `飞书返回了非 JSON 响应（HTTP ${result.status}）`,
+    }
+  }
+  const code = asNumber(json['code'])
+  if (code !== null && code !== 0) {
+    return { ok: false, chats: [], hasMore: false, code, msg: asString(json['msg']) ?? '未知错误' }
+  }
+  const data = asRecord(json['data'])
+  const items = data === null ? null : data['items']
+  const chats: ChatSummary[] = []
+  if (Array.isArray(items)) {
+    for (const raw of items) {
+      const item = asRecord(raw)
+      if (item === null) continue
+      const chatId = asString(item['chat_id'])
+      if (chatId === null) continue
+      chats.push({
+        chatId,
+        name: asString(item['name']),
+        description: asString(item['description']),
+        userCount: asNumber(item['user_count']),
+        chatMode: asString(item['chat_mode']),
+        external: item['external'] === true,
+      })
+    }
+  }
+  return {
+    ok: true,
+    chats,
+    hasMore: data !== null && data['has_more'] === true,
+    code: 0,
+    msg: null,
+  }
+}
+
+/* ──────────────────────────── 自检工具 ──────────────────────────── */
+
+interface CheckItem {
+  id: string
+  label: string
+  status: 'pass' | 'fail' | 'skip'
+  detail: string | null
+  /** 失败时需要开通的 scope（前端拼申请深链用），无则 null。 */
+  scope: string | null
+}
+
+function checkItem(
+  id: string,
+  label: string,
+  status: 'pass' | 'fail' | 'skip',
+  detail: string | null,
+  scope: string | null = null,
+): CheckItem {
+  return { id, label, status, detail, scope }
+}
+
+/** multipart 只需要 ASCII（boundary、头、探测文件名与内容），不引 TextEncoder 以免 lib 依赖。 */
+function asciiBytes(text: string): Uint8Array {
+  const out = new Uint8Array(text.length)
+  for (let i = 0; i < text.length; i += 1) {
+    out[i] = text.charCodeAt(i) & 0xff
+  }
+  return out
+}
+
+function buildMultipart(
+  fields: Array<{ name: string; value: string }>,
+  file: { name: string; filename: string; contentType: string; data: Uint8Array },
+): { body: Uint8Array; contentType: string } {
+  const boundary = `----dshfeishu${Date.now().toString(16)}`
+  const chunks: Uint8Array[] = []
+  for (const field of fields) {
+    chunks.push(
+      asciiBytes(
+        `--${boundary}\r\nContent-Disposition: form-data; name="${field.name}"\r\n\r\n${field.value}\r\n`,
+      ),
+    )
+  }
+  chunks.push(
+    asciiBytes(
+      `--${boundary}\r\nContent-Disposition: form-data; name="${file.name}"; filename="${file.filename}"\r\nContent-Type: ${file.contentType}\r\n\r\n`,
+    ),
+  )
+  chunks.push(file.data)
+  chunks.push(asciiBytes(`\r\n--${boundary}--\r\n`))
+
+  let total = 0
+  for (const chunk of chunks) total += chunk.length
+  const body = new Uint8Array(total)
+  let offset = 0
+  for (const chunk of chunks) {
+    body.set(chunk, offset)
+    offset += chunk.length
+  }
+  return { body, contentType: `multipart/form-data; boundary=${boundary}` }
+}
+
+interface ProbeResult {
+  ok: boolean
+  code: number | null
+  msg: string | null
+  extra: string | null
+}
+
+function probeFailure(json: Record<string, unknown> | null, status: number): ProbeResult {
+  if (json === null) {
+    return { ok: false, code: null, msg: `非 JSON 响应（HTTP ${status}）`, extra: null }
+  }
+  return {
+    ok: false,
+    code: asNumber(json['code']),
+    msg: asString(json['msg']) ?? asString(json['error']) ?? '未知错误',
+    extra: null,
+  }
+}
+
+/** 探机器人身份：/bot/v3/info 的 bot 在响应顶层，不在 data 里。 */
+async function probeBotInfo(origin: string, token: string): Promise<ProbeResult> {
+  const result = await httpJson(`${origin}/open-apis/bot/v3/info`, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  const json = result.json
+  const code = json === null ? null : asNumber(json['code'])
+  if (json === null || (code !== null && code !== 0)) {
+    return probeFailure(json, result.status)
+  }
+  const bot = asRecord(json['bot'])
+  return {
+    ok: true,
+    code: 0,
+    msg: null,
+    extra: bot === null ? null : asString(bot['app_name']),
+  }
+}
+
+/** 读一行历史：验证 im:message 读权限，且不往群里发任何东西。 */
+async function probeChatHistory(
+  origin: string,
+  token: string,
+  chatId: string,
+): Promise<ProbeResult> {
+  const result = await httpJson(
+    `${origin}/open-apis/im/v1/messages?container_id_type=chat&container_id=${encodeURIComponent(chatId)}&page_size=1&sort_type=ByCreateTimeDesc`,
+    { method: 'GET', headers: { Authorization: `Bearer ${token}` } },
+  )
+  const json = result.json
+  const code = json === null ? null : asNumber(json['code'])
+  if (json === null || (code !== null && code !== 0)) {
+    return probeFailure(json, result.status)
+  }
+  const data = asRecord(json['data'])
+  const items = data === null ? null : data['items']
+  const count = Array.isArray(items) ? items.length : 0
+  return { ok: true, code: 0, msg: null, extra: `读到 ${count} 条` }
+}
+
+/** 上传一个 20 字节探测文件：只为验证 im:resource 写权限，不上传就不发消息、群里无痕。 */
+async function probeFileUpload(origin: string, token: string): Promise<ProbeResult> {
+  const multipart = buildMultipart([{ name: 'file_type', value: 'stream' }], {
+    name: 'file',
+    filename: 'dsh-feishu-selftest.txt',
+    contentType: 'text/plain',
+    data: asciiBytes('dsh-feishu selftest'),
+  })
+  const result = await httpJson(`${origin}/open-apis/im/v1/files`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': multipart.contentType,
+    },
+    body: multipart.body,
+  })
+  const json = result.json
+  const code = json === null ? null : asNumber(json['code'])
+  if (json === null || (code !== null && code !== 0)) {
+    return probeFailure(json, result.status)
+  }
+  const data = asRecord(json['data'])
+  const fileKey = data === null ? null : asString(data['file_key'])
+  return { ok: true, code: 0, msg: null, extra: fileKey === null ? null : `file_key ${fileKey.slice(0, 18)}…` }
+}
+
+async function probeDrive(origin: string, token: string): Promise<ProbeResult> {
+  const result = await httpJson(`${origin}/open-apis/drive/v1/files?page_size=1`, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  const json = result.json
+  const code = json === null ? null : asNumber(json['code'])
+  if (json === null || (code !== null && code !== 0)) {
+    return probeFailure(json, result.status)
+  }
+  const data = asRecord(json['data'])
+  const files = data === null ? null : data['files']
+  const count = Array.isArray(files) ? files.length : 0
+  return { ok: true, code: 0, msg: null, extra: `根目录 ${count} 项` }
+}
+
+/** 飞书权限错误码：99991672 = 缺 scope，230027 = 缺群消息读权限，230001 = 会话不存在/不在群里。 */
+const SCOPE_ERROR_CODES = new Set([99991672, 99991663, 230027])
+
+function failureScope(result: ProbeResult): string | null {
+  return result.code !== null && SCOPE_ERROR_CODES.has(result.code) ? '__scope__' : null
 }
 
 /* ──────────────────────────── op 实现 ──────────────────────────── */
@@ -1053,6 +1290,257 @@ async function runSave(
   }
 }
 
+/* ──────────────────────────── 向导 op ──────────────────────────── */
+
+async function runDiscoverChats(
+  ctx: PluginContext,
+  body: Record<string, unknown>,
+  targets: Targets,
+): Promise<Record<string, unknown>> {
+  const env = readEnvSnapshot(targets.envPath)
+  const credentials = credentialsForTest(body, env)
+
+  if (credentials.appId === null || credentials.appSecret === null) {
+    return {
+      ok: false,
+      op: 'discover-chats',
+      error: '先填 App ID 和 App Secret（至少保存过一次），再来扫描会话。',
+    }
+  }
+
+  const tokenResult = await fetchTenantToken(
+    credentials.origin,
+    credentials.appId,
+    credentials.appSecret,
+  )
+  if (!tokenResult.ok) {
+    return {
+      ok: false,
+      op: 'discover-chats',
+      stage: 'credentials',
+      error: `凭据无效：code=${tokenResult.code ?? '未知'} msg=${tokenResult.msg}`,
+      feishu: { code: tokenResult.code, msg: tokenResult.msg },
+    }
+  }
+
+  const listed = await listBotChats(credentials.origin, tokenResult.value.token)
+  if (!listed.ok) {
+    const missing = listed.code !== null && SCOPE_ERROR_CODES.has(listed.code)
+    return {
+      ok: false,
+      op: 'discover-chats',
+      stage: 'list',
+      error: `列会话失败：code=${listed.code ?? '未知'} msg=${listed.msg ?? ''}`,
+      feishu: { code: listed.code, msg: listed.msg },
+      scope: missing ? 'im:chat:readonly' : null,
+    }
+  }
+
+  ctx.logger.info('[dsh-feishu] discover-chats → %d 个会话', listed.chats.length)
+
+  return {
+    ok: true,
+    op: 'discover-chats',
+    chats: listed.chats,
+    hasMore: listed.hasMore,
+    current: credentials.chatId,
+    message:
+      listed.chats.length === 0
+        ? '这个机器人还没被拉进任何群：先在飞书里把它拉进一个群，再点「重新扫描」。'
+        : `找到 ${listed.chats.length} 个会话。`,
+  }
+}
+
+async function runSelfTest(
+  ctx: PluginContext,
+  body: Record<string, unknown>,
+  config: PluginConfig,
+  targets: Targets,
+): Promise<Record<string, unknown>> {
+  const env = readEnvSnapshot(targets.envPath)
+  const credentials = credentialsForTest(body, env)
+  const checks: CheckItem[] = []
+
+  // ① 凭据文件（本地）
+  if (!env.exists) {
+    checks.push(checkItem('env', '凭据文件', 'fail', `还没有 ${targets.envPath}：先保存一次凭据`))
+  } else if (env.appId === null || !env.hasSecret) {
+    checks.push(checkItem('env', '凭据文件', 'fail', '文件在，但缺 App ID 或 App Secret'))
+  } else {
+    checks.push(
+      checkItem('env', '凭据文件', 'pass', `secret 末四位 ${env.secretTail ?? '????'} · ${env.path}`),
+    )
+  }
+
+  // ② MCP 挂载（本地）
+  const resolved = resolveProfile(config, targets)
+  const patchPath = resolved.dir === null ? null : path.join(resolved.dir, 'cordis.patch.yml')
+  const patch: PatchSnapshot =
+    patchPath === null
+      ? { path: '', exists: false, hasBlock: false, mcpMounted: false }
+      : readPatchSnapshot(patchPath)
+  checks.push(
+    patch.mcpMounted
+      ? checkItem('patch', 'MCP 已挂载', 'pass', patchPath ?? '')
+      : checkItem(
+          'patch',
+          'MCP 已挂载',
+          'fail',
+          patchPath === null
+            ? '探测不到 profile：patch 路径未知'
+            : '还没写进 cordis.patch.yml（点「保存并启用」会自动补）',
+        ),
+  )
+
+  const skipRemaining = (from: number, reason: string): void => {
+    for (let i = from; i < REMAINING_LABELS.length; i += 1) {
+      const label = REMAINING_LABELS[i]
+      if (label !== undefined) checks.push(checkItem(`skip-${i}`, label, 'skip', reason))
+    }
+  }
+
+  if (credentials.appId === null || credentials.appSecret === null) {
+    checks.push(checkItem('token', '应用凭据', 'skip', '缺 App ID / App Secret'))
+    skipRemaining(0, '凭据不全，跳过')
+    return selfTestSummary(checks, 'cheart')
+  }
+
+  const tokenResult = await fetchTenantToken(
+    credentials.origin,
+    credentials.appId,
+    credentials.appSecret,
+  )
+  if (!tokenResult.ok) {
+    checks.push(
+      checkItem(
+        'token',
+        '应用凭据',
+        'fail',
+        `code=${tokenResult.code ?? '未知'} ${tokenResult.msg}（App ID / Secret 抄错，或应用被停用）`,
+      ),
+    )
+    skipRemaining(0, '凭据无效，后续检查跳过')
+    return selfTestSummary(checks, 'slip')
+  }
+  const token = tokenResult.value.token
+  checks.push(
+    checkItem('token', '应用凭据', 'pass', `tenant_access_token 有效，${tokenResult.value.expire ?? '?'} 秒后过期`),
+  )
+
+  // ③ 机器人身份
+  const bot = await probeBotInfo(credentials.origin, token)
+  checks.push(
+    bot.ok
+      ? checkItem('bot', '机器人身份', 'pass', bot.extra === null ? null : `应用名「${bot.extra}」`)
+      : checkItem('bot', '机器人身份', 'fail', `code=${bot.code ?? '未知'} ${bot.msg ?? ''}`, 'im:chat:readonly'),
+  )
+
+  // ④ 会话列表
+  const chats = await listBotChats(credentials.origin, token)
+  checks.push(
+    chats.ok
+      ? checkItem(
+          'chats',
+          '会话列表',
+          'pass',
+          chats.chats.length === 0 ? '能读列表，但机器人还没进任何群' : `可见 ${chats.chats.length} 个会话`,
+        )
+      : checkItem('chats', '会话列表', 'fail', `code=${chats.code ?? '未知'} ${chats.msg ?? ''}`, 'im:chat:readonly'),
+  )
+
+  const chatId = credentials.chatId
+
+  // ⑤ 目标会话
+  if (chatId === null) {
+    checks.push(checkItem('chat', '目标会话', 'skip', '还没选默认会话（第 3 步）'))
+  } else {
+    const detail = await fetchChatName(credentials.origin, token, chatId)
+    checks.push(
+      detail.ok
+        ? checkItem('chat', '目标会话', 'pass', `「${detail.name ?? '(无名)'}」`)
+        : checkItem(
+            'chat',
+            '目标会话',
+            'fail',
+            `code=${detail.code ?? '未知'} ${detail.msg ?? ''}`,
+            detail.code === 230027 || detail.code === 230001 ? 'im:chat:readonly' : null,
+          ),
+    )
+  }
+
+  // ⑥ 读聊天记录（零骚扰：只读一行，不发任何消息）
+  if (chatId === null) {
+    checks.push(checkItem('history', '读聊天记录', 'skip', '需要先选默认会话'))
+  } else {
+    const history = await probeChatHistory(credentials.origin, token, chatId)
+    checks.push(
+      history.ok
+        ? checkItem('history', '读聊天记录', 'pass', history.extra)
+        : checkItem(
+            'history',
+            '读聊天记录',
+            'fail',
+            `code=${history.code ?? '未知'} ${history.msg ?? ''}`,
+            'im:message.group_msg',
+          ),
+    )
+  }
+
+  // ⑦ 上传文件（上传后不发送，聊天里无痕）
+  const upload = await probeFileUpload(credentials.origin, token)
+  checks.push(
+    upload.ok
+      ? checkItem('upload', '上传文件', 'pass', upload.extra)
+      : checkItem('upload', '上传文件', 'fail', `code=${upload.code ?? '未知'} ${upload.msg ?? ''}`, 'im:resource'),
+  )
+
+  // ⑧ 云空间
+  const drive = await probeDrive(credentials.origin, token)
+  checks.push(
+    drive.ok
+      ? checkItem('drive', '云空间', 'pass', drive.extra)
+      : checkItem('drive', '云空间', 'fail', `code=${drive.code ?? '未知'} ${drive.msg ?? ''}`, 'drive:drive'),
+  )
+
+  ctx.logger.info(
+    '[dsh-feishu] self-test → %d 通过 / %d 失败',
+    checks.filter((item) => item.status === 'pass').length,
+    checks.filter((item) => item.status === 'fail').length,
+  )
+
+  return selfTestSummary(checks, 'done')
+}
+
+const REMAINING_LABELS = ['机器人身份', '会话列表', '目标会话', '读聊天记录', '上传文件', '云空间']
+
+function selfTestSummary(checks: CheckItem[], stage: string): Record<string, unknown> {
+  const passed = checks.filter((item) => item.status === 'pass').length
+  const failed = checks.filter((item) => item.status === 'fail').length
+  const skipped = checks.filter((item) => item.status === 'skip').length
+  const scopes: string[] = []
+  for (const item of checks) {
+    if (item.status === 'fail' && item.scope !== null && !scopes.includes(item.scope)) {
+      scopes.push(item.scope)
+    }
+  }
+  return {
+    ok: failed === 0,
+    op: 'self-test',
+    stage,
+    checks,
+    passed,
+    failed,
+    skipped,
+    scopes,
+    message:
+      failed === 0
+        ? skipped === 0
+          ? '全部通过，可以开始用了。'
+          : `通过（${skipped} 项跳过）。`
+        : `${failed} 项没通过，按每项的提示处理后重试。`,
+  }
+}
+
 /* ──────────────────────────── 插件入口 ──────────────────────────── */
 
 export function apply(ctx: PluginContext, config?: PluginConfig): void {
@@ -1096,7 +1584,18 @@ export function apply(ctx: PluginContext, config?: PluginConfig): void {
               sendJson(res, 200, await runSave(ctx, body, effective, targets))
               return
             }
-            throw new ApiError(400, `未知 op：${op === '' ? '(空)' : op}（只支持 status / test / save）`)
+            if (op === 'discover-chats') {
+              sendJson(res, 200, await runDiscoverChats(ctx, body, targets))
+              return
+            }
+            if (op === 'self-test') {
+              sendJson(res, 200, await runSelfTest(ctx, body, effective, targets))
+              return
+            }
+            throw new ApiError(
+              400,
+              `未知 op：${op === '' ? '(空)' : op}（只支持 status / test / save / discover-chats / self-test）`,
+            )
           } catch (error) {
             const status = error instanceof ApiError ? error.status : 500
             const message = error instanceof Error ? error.message : String(error)
