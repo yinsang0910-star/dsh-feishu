@@ -1,0 +1,18 @@
+# dsh-plugin-skeleton —— bundle patch
+#
+# 语义（依据 dsh-app-boot/lib/index.js:61-118 `applyEntryPatches`）：
+#   · patch 是 YAML 顶层数组，每项若含 `insert`：
+#       - 带 `id`：把 insert 列表 push 进该 id 对应行的 `config`（该行必须是 group），
+#                  找不到 / 不是 group 都只 warn 后跳过；
+#       - 不带 `id`：直接 push 到 entry 列表根部。
+#   · 不含 `insert` 的 patch：按 `id` 定位行，校验 `name` 一致后逐键覆盖（`disabled`、
+#     `config`、`inject` 都只是普通键覆盖）。
+#   · 匹配不到任何行的 patch 只 warn，不会让启动失败。
+#
+# 本 profile 的 cordis.yml 是一个空 entry 列表，树由 patch 层拼出来，所以这里不带 id。
+
+- insert:
+    - id: dsh-plugin-skeleton
+      name: '@dsh-feishu/dsh-plugin'
+      config:
+        endpointPath: /dsh-plugin-skeleton/api
