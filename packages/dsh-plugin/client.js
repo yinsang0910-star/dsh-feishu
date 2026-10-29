@@ -26,8 +26,12 @@ window.__ModuleLoader__.load({
     var h = react.createElement
 
     /**
-     * 官方 UI primitives 在基座表里（不需要新依赖、不需要打包）。
-     * 但取不到时退回原生元素：宁可样式朴素，也不能让整节设置页消失。
+     * 基座自带的 UI 组件库（不需要新依赖、不需要打包）。
+     *
+     * **Button / Input 是 forwardRef 造出来的，typeof 是 'object' 不是 'function'。**
+     * 早先按 `typeof x === 'function'` 判断，于是组件全被判成“取不到”，整页降级成裸
+     * 控件 —— 还带着写死的 `#1b1b1b`，在深色主题下按钮直接变成黑底白字。现在改判
+     * `$$typeof`：普通函数组件和 forwardRef / memo 都算拿到。
      */
     var primitives = {}
     try {
@@ -35,47 +39,97 @@ window.__ModuleLoader__.load({
     } catch (error) {
       primitives = {}
     }
-    var UIButton = typeof primitives.Button === 'function' ? primitives.Button : null
-    var UIInput = typeof primitives.Input === 'function' ? primitives.Input : null
+
+    function pick(candidate) {
+      if (typeof candidate === 'function') return candidate
+      if (candidate && typeof candidate === 'object' && candidate.$$typeof !== undefined) return candidate
+      return null
+    }
+
+    var UIButton = pick(primitives.Button)
+    var UITag = pick(primitives.Tag)
+    var UIStateDot = pick(primitives.StateDot)
+    var UIPill = pick(primitives.Pill)
 
     var ID = '@dsh-feishu/dsh-plugin'
     /** 文档相对路径，见文件头注释。 */
     var API = 'dsh-feishu/api'
 
-    var COLOR = {
-      text: 'var(--dsw-alias-text-primary, #1b1b1b)',
+    /* 全部走 --dsw-* token：明暗主题由基座决定，这里不写任何具体颜色。 */
+    var C = {
+      text: 'var(--dsw-alias-text-primary, currentColor)',
       dim: 'var(--dsw-alias-text-secondary, #6f6f6f)',
-      line: 'var(--dsw-alias-border-subtle, rgba(0,0,0,0.12))',
-      ok: '#177245',
-      warn: '#8a5a00',
-      err: '#b4232b',
-      code: 'var(--dsw-alias-bg-secondary, rgba(0,0,0,0.04))',
+      faint: 'var(--dsw-alias-text-tertiary, #8f8f8f)',
+      line: 'var(--dsw-alias-border-subtle, rgba(128,128,128,0.24))',
+      code: 'var(--dsw-alias-bg-secondary, rgba(128,128,128,0.12))',
+      err: 'var(--dsw-alias-text-danger, #b4232b)',
+      warn: 'var(--dsw-alias-text-warning, #8a5a00)',
+      mono: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
     }
 
-    var fieldStyle = { display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 12 }
-    var labelStyle = { fontSize: 12, fontWeight: 600, color: COLOR.text }
-    var hintStyle = { fontSize: 11, color: COLOR.dim, lineHeight: 1.5 }
-    var inputStyle = {
-      boxSizing: 'border-box',
-      width: '100%',
-      maxWidth: 460,
-      padding: '6px 9px',
-      fontSize: 13,
-      color: COLOR.text,
-      background: 'transparent',
-      border: '1px solid ' + COLOR.line,
-      borderRadius: 8,
-      outline: 'none',
+    var S = {
+      page: { maxWidth: 620, color: C.text, fontSize: 13, lineHeight: 1.6 },
+      lead: { color: C.dim, marginTop: 4 },
+      group: { marginTop: 22 },
+      groupTitle: { fontSize: 12, fontWeight: 600, color: C.dim, marginBottom: 10 },
+      field: { marginBottom: 14 },
+      label: { display: 'block', fontSize: 12, fontWeight: 600, marginBottom: 6 },
+      hint: { fontSize: 11, color: C.faint, marginTop: 5, lineHeight: 1.55 },
+      actions: { display: 'flex', gap: 8, alignItems: 'center', marginTop: 18, flexWrap: 'wrap' },
+      spacer: { flex: 1 },
+      status: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        marginTop: 26,
+        paddingTop: 14,
+        borderTop: '1px solid ' + C.line,
+      },
+      statusText: { fontWeight: 600 },
+      statusMeta: { color: C.faint, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+      detailToggle: { cursor: 'pointer', fontSize: 12, color: C.dim, marginTop: 10, userSelect: 'none' },
+      detailBody: { marginTop: 8, paddingLeft: 2 },
+      row: { display: 'flex', gap: 12, padding: '3px 0', fontSize: 12, alignItems: 'baseline' },
+      rowKey: { flex: '0 0 92px', color: C.faint },
+      rowVal: { minWidth: 0, wordBreak: 'break-all' },
+      mono: { fontFamily: C.mono, fontSize: 11.5 },
+      notice: {
+        marginTop: 12,
+        padding: '8px 10px',
+        fontSize: 12,
+        lineHeight: 1.6,
+        borderRadius: 8,
+        whiteSpace: 'pre-wrap',
+        wordBreak: 'break-word',
+        border: '1px solid ' + C.line,
+        background: C.code,
+      },
+      /** 输入框：按 primitives 的 Input.module.css 取值，但宽度归自己控制。 */
+      input: {
+        boxSizing: 'border-box',
+        display: 'block',
+        width: '100%',
+        maxWidth: 420,
+        height: 32,
+        padding: '0 8px',
+        fontSize: 14,
+        lineHeight: '22px',
+        color: 'var(--dsw-alias-label-primary, ' + C.text + ')',
+        background: 'var(--dsw-alias-bg-layer-1, transparent)',
+        border: '0.5px solid var(--dsw-alias-border-l4, ' + C.line + ')',
+        borderRadius: 'var(--dsw-radius-md, 8px)',
+        outline: 'none',
+      },
+      fallbackButton: {
+        padding: '6px 14px',
+        fontSize: 13,
+        borderRadius: 8,
+        border: '1px solid ' + C.line,
+        background: 'transparent',
+        color: C.text,
+        cursor: 'pointer',
+      },
     }
-    var codeStyle = {
-      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
-      fontSize: 11,
-      background: COLOR.code,
-      padding: '1px 5px',
-      borderRadius: 4,
-      wordBreak: 'break-all',
-    }
-    var buttonRowStyle = { display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', margin: '14px 0 6px' }
 
     /* ───────────────────────────── 后端调用 ───────────────────────────── */
 
@@ -107,21 +161,22 @@ window.__ModuleLoader__.load({
     /* ───────────────────────────── 小零件 ───────────────────────────── */
 
     function TextInput(props) {
-      var shared = {
+      /**
+       * 不用 primitives 的 `Input`：它外层 `.wrap` 是 `inline-flex`，宽度由内容撑开，
+       * 而 `style` 会透传到内层 `<input>`（`flex:1;min-width:0`）改不动外层 —— 放进设置页
+       * 会缩成一小截。这里按它的 token 自己画，外观一致、宽度可控。
+       */
+      return h('input', {
+        id: props.id,
         type: props.type || 'text',
         value: props.value,
         placeholder: props.placeholder,
         disabled: props.disabled,
         autoComplete: 'off',
         spellCheck: false,
+        style: S.input,
         onChange: props.onChange,
-      }
-      if (UIInput !== null) {
-        shared.style = { width: '100%', maxWidth: 460 }
-        return h(UIInput, shared)
-      }
-      shared.style = inputStyle
-      return h('input', shared)
+      })
     }
 
     function ActionButton(props) {
@@ -130,7 +185,7 @@ window.__ModuleLoader__.load({
           UIButton,
           {
             type: 'button',
-            variant: props.variant || 'primary',
+            variant: props.variant || 'outline',
             size: 'sm',
             disabled: props.disabled,
             onClick: props.onClick,
@@ -138,75 +193,42 @@ window.__ModuleLoader__.load({
           props.children,
         )
       }
-      var style = {
-        padding: '6px 14px',
-        fontSize: 13,
-        borderRadius: 8,
-        border: '1px solid ' + COLOR.line,
-        cursor: props.disabled ? 'default' : 'pointer',
-        opacity: props.disabled ? 0.55 : 1,
-        background: props.variant === 'primary' ? COLOR.text : 'transparent',
-        color: props.variant === 'primary' ? '#fff' : COLOR.text,
-      }
-      return h('button', { type: 'button', style: style, disabled: props.disabled, onClick: props.onClick }, props.children)
+      return h(
+        'button',
+        {
+          type: 'button',
+          disabled: props.disabled,
+          style: Object.assign({}, S.fallbackButton, { opacity: props.disabled ? 0.5 : 1 }),
+          onClick: props.onClick,
+        },
+        props.children,
+      )
     }
 
     function Field(props) {
       return h(
         'div',
-        { style: fieldStyle },
-        h('label', { style: labelStyle }, props.label),
+        { style: S.field },
+        h('label', { style: S.label, htmlFor: props.htmlFor }, props.label),
         props.children,
-        props.hint ? h('div', { style: hintStyle }, props.hint) : null,
+        props.hint ? h('div', { style: S.hint }, props.hint) : null,
       )
     }
 
-    function StatusRow(props) {
-      var value = props.value
-      var valueNode
-      if (props.mono) {
-        valueNode = h('code', { style: codeStyle }, String(value))
-      } else {
-        valueNode = h('span', null, String(value))
-      }
+    function DetailRow(props) {
       return h(
         'div',
-        {
-          style: {
-            display: 'flex',
-            gap: 10,
-            padding: '3px 0',
-            fontSize: 12,
-            lineHeight: 1.6,
-            alignItems: 'baseline',
-          },
-        },
-        h('span', { style: { minWidth: 92, color: COLOR.dim, flex: '0 0 auto' } }, props.label),
-        h('span', { style: { color: props.tone ? COLOR[props.tone] : COLOR.text, minWidth: 0 } }, valueNode),
+        { style: S.row },
+        h('div', { style: S.rowKey }, props.label),
+        h('div', { style: Object.assign({}, S.rowVal, props.mono ? S.mono : null) }, props.children),
       )
     }
 
     function Notice(props) {
       if (!props.notice || !props.notice.text) return null
-      return h(
-        'div',
-        {
-          role: 'status',
-          style: {
-            marginTop: 10,
-            padding: '8px 10px',
-            fontSize: 12,
-            lineHeight: 1.6,
-            borderRadius: 8,
-            whiteSpace: 'pre-wrap',
-            wordBreak: 'break-word',
-            color: COLOR[props.notice.tone] || COLOR.text,
-            background: COLOR.code,
-            border: '1px solid ' + COLOR.line,
-          },
-        },
-        props.notice.text,
-      )
+      var tone = props.notice.tone
+      var color = tone === 'err' ? C.err : tone === 'warn' ? C.warn : C.text
+      return h('div', { role: 'status', style: Object.assign({}, S.notice, { color: color }) }, props.notice.text)
     }
 
     /* ───────────────────────────── 设置页主体 ───────────────────────────── */
@@ -239,7 +261,6 @@ window.__ModuleLoader__.load({
       var busyState = react.useState('')
       var busy = busyState[0]
       var setBusy = busyState[1]
-
       /** 拉状态，并在表单还空着时把已存的值填进去（secret 回填不了，只回末 4 位）。 */
       var refresh = react.useCallback(function (keepNotice) {
         setBusy(function (current) {
@@ -311,11 +332,11 @@ window.__ModuleLoader__.load({
       var onSave = react.useCallback(
         function () {
           if (appId.trim() === '') {
-            setNotice({ tone: 'err', text: '先填 App ID（飞书开放平台的 cli_ 开头的那串）。' })
+            setNotice({ tone: 'err', text: '先填 App ID（飞书开放平台里 cli_ 开头的那串）。' })
             return
           }
           setBusy('save')
-          setNotice({ tone: 'dim', text: '正在写凭据文件与 profile patch…' })
+          setNotice({ tone: 'dim', text: '正在写入凭据并挂载 MCP…' })
           callApi({
             op: 'save',
             appId: appId,
@@ -331,14 +352,7 @@ window.__ModuleLoader__.load({
                 return
               }
               setSecret('')
-              var lines = [data.message || '已保存。重启 DSH 后生效。']
-              if (data.patch && data.patch.path) {
-                lines.push('patch：' + data.patch.path + '（' + data.patch.mode + '）')
-              }
-              if (data.warnings && data.warnings.length) {
-                lines.push('注意：' + data.warnings.join(' / '))
-              }
-              setNotice({ tone: 'ok', text: lines.join('\n') })
+              setNotice({ tone: 'ok', text: data.message || '已保存。重启 DSH 后生效。' })
               refresh(true)
             })
             .catch(function (error) {
@@ -354,48 +368,48 @@ window.__ModuleLoader__.load({
       var env = status && status.env ? status.env : null
       var profile = status && status.profile ? status.profile : null
       var profiles = status && Array.isArray(status.profiles) ? status.profiles : []
+      var configured = status !== null && status.configured === true
 
-      var configuredText
-      if (env === null) configuredText = '未知（还没读到状态）'
-      else if (status.configured) {
-        configuredText =
-          '已配置 · App ID ' + env.appId + ' · Secret ' + (env.secretTail ? '****' + env.secretTail : '已存')
-      } else if (env.exists) {
-        configuredText = '凭据文件在，但缺 App ID 或 Secret'
-      } else {
-        configuredText = '未配置'
+      /* 一行说清"现在能不能用"，其余全部收进细节。 */
+      var dotState = status === null ? 'ongoing' : configured ? 'done' : 'warning'
+      var summaryText = status === null ? '正在读取…' : configured ? '已配置' : '尚未配置'
+      var summaryMeta = ''
+      if (configured && env) {
+        summaryMeta = env.appId + (env.secretTail ? ' · Secret ****' + env.secretTail : '')
+      } else if (env && env.exists) {
+        summaryMeta = '凭据文件在，缺 App ID 或 Secret'
       }
 
-      var secretHint = '密码框：只在点「测试连接 / 保存并启用」时发给本机后端；留空表示沿用已存的那份。'
-      if (env && env.hasSecret && env.secretTail) {
-        secretHint = '已存一份（末 4 位 ****' + env.secretTail + '）；留空则沿用，填入则覆盖。'
-      }
+      var mounted = profile !== null && profile.mcpMounted === true
+      var mountLabel = profile === null ? 'MCP 状态未知' : mounted ? 'MCP 已挂载' : 'MCP 未挂载'
+      var mountTone = mounted ? 'success' : profile === null ? 'outline' : 'warning'
+
+      var secretHint = env && env.hasSecret && env.secretTail
+        ? '已存一份（末 4 位 ****' + env.secretTail + '）。留空沿用，填入覆盖。'
+        : '飞书开放平台 → 凭证与基础信息。'
 
       return h(
         'div',
-        { style: { maxWidth: 720, color: COLOR.text, fontSize: 13, lineHeight: 1.7 } },
-        h('div', { style: { fontSize: 15, fontWeight: 600, marginBottom: 4 } }, '飞书连接'),
-        h(
-          'div',
-          { style: hintStyle },
-          '把飞书接进 DSH：填 App ID / App Secret / 默认会话，先测连接，再保存并启用。凭据写到 ',
-          h('code', { style: codeStyle }, env && env.path ? env.path : '~/.config/dsh/feishu.env'),
-          '（0600），MCP 行写进当前 profile 的 ',
-          h('code', { style: codeStyle }, 'cordis.patch.yml'),
-          '。',
-        ),
+        { style: S.page },
+
+        /* ── 标题 ── */
+        h('div', { style: { fontSize: 15, fontWeight: 600 } }, '飞书连接'),
+        h('div', { style: S.lead }, '填凭据、测一次、保存。凭据只写在本机文件里，不进任何配置文件。'),
 
         /* ── 表单 ── */
         h(
           'div',
-          { style: { marginTop: 18 } },
+          { style: S.group },
+          h('div', { style: S.groupTitle }, '凭据'),
           h(
             Field,
             {
               label: 'App ID',
-              hint: '飞书开放平台 → 凭证与基础信息 → App ID（cli_ 开头）。',
+              htmlFor: 'dsh-feishu-app-id',
+              hint: '飞书开放平台 → 凭证与基础信息，cli_ 开头。',
             },
             h(TextInput, {
+              id: 'dsh-feishu-app-id',
               value: appId,
               placeholder: 'cli_xxxxxxxxxxxxxxxx',
               onChange: function (event) {
@@ -405,8 +419,9 @@ window.__ModuleLoader__.load({
           ),
           h(
             Field,
-            { label: 'App Secret', hint: secretHint },
+            { label: 'App Secret', htmlFor: 'dsh-feishu-app-secret', hint: secretHint },
             h(TextInput, {
+              id: 'dsh-feishu-app-secret',
               type: 'password',
               value: secret,
               placeholder: env && env.hasSecret ? '留空 = 沿用已存的 Secret' : '粘贴 App Secret',
@@ -418,10 +433,12 @@ window.__ModuleLoader__.load({
           h(
             Field,
             {
-              label: '默认会话 chat_id（可选）',
-              hint: '群设置里拿到的 oc_ 开头的 chat_id；机器人必须在群里，否则测试会报「查不到」。',
+              label: '默认会话',
+              htmlFor: 'dsh-feishu-chat-id',
+              hint: '可选。不填就用机器人所在的群。',
             },
             h(TextInput, {
+              id: 'dsh-feishu-chat-id',
               value: chatId,
               placeholder: 'oc_xxxxxxxxxxxxxxxx',
               onChange: function (event) {
@@ -431,20 +448,21 @@ window.__ModuleLoader__.load({
           ),
         ),
 
-        /* ── 动作 ── */
+        /* ── 动作：主操作在左，次操作在后面 ── */
         h(
           'div',
-          { style: buttonRowStyle },
-          h(
-            ActionButton,
-            { variant: 'outline', disabled: busy !== '', onClick: onTest },
-            busy === 'test' ? '测试中…' : '测试连接',
-          ),
+          { style: S.actions },
           h(
             ActionButton,
             { variant: 'primary', disabled: busy !== '', onClick: onSave },
             busy === 'save' ? '保存中…' : '保存并启用',
           ),
+          h(
+            ActionButton,
+            { variant: 'outline', disabled: busy !== '', onClick: onTest },
+            busy === 'test' ? '测试中…' : '测试连接',
+          ),
+          h('div', { style: S.spacer }),
           h(
             ActionButton,
             {
@@ -455,117 +473,110 @@ window.__ModuleLoader__.load({
                 refresh(false)
               },
             },
-            busy === 'status' ? '刷新中…' : '刷新状态',
+            busy === 'status' ? '刷新中…' : '刷新',
           ),
         ),
 
         h(Notice, { notice: notice }),
 
-        /* ── 状态区 ── */
+        /* ── 状态：一行摘要 + 徽标 ── */
         h(
           'div',
-          {
-            style: {
-              marginTop: 18,
-              paddingTop: 14,
-              borderTop: '1px solid ' + COLOR.line,
-            },
-          },
-          h('div', { style: { fontSize: 12, fontWeight: 600, marginBottom: 6 } }, '当前状态'),
-          h(StatusRow, {
-            label: '凭据',
-            value: configuredText,
-            tone: env === null ? 'dim' : status.configured ? 'ok' : 'warn',
-          }),
-          h(StatusRow, {
-            label: '凭据文件',
-            mono: true,
-            value: env === null ? '(未知)' : env.path,
-          }),
-          h(StatusRow, {
-            label: '文件状态',
-            value:
+          { style: S.status },
+          UIStateDot ? h(UIStateDot, { state: dotState }) : null,
+          h('span', { style: S.statusText }, summaryText),
+          summaryMeta ? h('span', { style: S.statusMeta }, summaryMeta) : null,
+          h('div', { style: S.spacer }),
+          UITag ? h(UITag, { tone: mountTone }, mountLabel) : h('span', { style: S.statusMeta }, mountLabel),
+        ),
+
+        /* ── 细节：默认收起，需要排查时才展开 ── */
+        h(
+          'details',
+          { style: { marginTop: 2 } },
+          h('summary', { style: S.detailToggle }, '技术细节'),
+          h(
+            'div',
+            { style: S.detailBody },
+
+            h(DetailRow, { label: '凭据文件', mono: true }, env && env.path ? env.path : '（未知）'),
+            h(
+              DetailRow,
+              { label: '文件状态' },
               env === null
-                ? '(未知)'
+                ? '（未知）'
                 : (env.exists ? '存在' : '不存在') +
                   (env.fileMode ? ' · mode ' + env.fileMode : '') +
                   (env.modeApplied ? '' : ' · 不是 0600'),
-            tone: env && env.exists ? 'ok' : 'warn',
-          }),
-          h(StatusRow, {
-            label: '目标 profile',
-            value:
+            ),
+            h(
+              DetailRow,
+              { label: '目标 profile' },
               profile === null
-                ? '(未知)'
-                : (profile.name || '(未探测出)') + '（来源：' + profile.source + '）',
-            tone: profile && profile.name ? 'text' : 'warn',
-          }),
-          h(StatusRow, {
-            label: 'patch 文件',
-            mono: true,
-            value: profile && profile.patchPath ? profile.patchPath : '(未知)',
-          }),
-          h(StatusRow, {
-            label: 'MCP 挂载',
-            value:
+                ? '（未知）'
+                : (profile.name || '（未探测出）') + '（来源：' + profile.source + '）',
+            ),
+            h(DetailRow, { label: 'patch 文件', mono: true }, profile && profile.patchPath ? profile.patchPath : '（未知）'),
+            h(
+              DetailRow,
+              { label: 'MCP 挂载' },
               profile === null
-                ? '(未知)'
+                ? '（未知）'
                 : profile.mcpMounted
                   ? '已挂载（mcp-feishu，重启后连上）'
                   : profile.managedBlock
-                    ? '有块但缺 mcp-feishu 行'
+                    ? '有块，但块里没有 mcp-feishu 行'
                     : '未挂载',
-            tone: profile && profile.mcpMounted ? 'ok' : 'warn',
-          }),
-          h(StatusRow, {
-            label: '启动包装',
-            mono: true,
-            value:
+            ),
+            h(
+              DetailRow,
+              { label: '启动包装', mono: true },
               profile === null
-                ? '(未知)'
+                ? '（未知）'
                 : profile.wrapperPath + (profile.wrapperExists ? ' · 存在' : ' · 不存在'),
-            tone: profile && profile.wrapperExists ? 'text' : 'warn',
-          }),
+            ),
+            h(DetailRow, { label: '控件库' }, UIButton !== null || UITag !== null ? '基座组件已加载' : '基座组件未取到（降级样式）'),
 
-          profiles.length > 1
-            ? h(
-                'div',
-                { style: { marginTop: 10 } },
-                h('div', { style: labelStyle }, '写 patch 到哪个 profile'),
-                h(
-                  'select',
+            profiles.length > 1
+              ? h(
+                  'div',
+                  { style: { marginTop: 10 } },
+                  h('div', { style: S.label }, '写 patch 到哪个 profile'),
+                  h(
+                    'select',
+                    {
+                      value: profilePick,
+                      style: Object.assign({}, S.input, { maxWidth: 220 }),
+                      onChange: function (event) {
+                        setProfilePick(event.target.value)
+                      },
+                    },
+                    h('option', { value: '' }, '（自动探测）'),
+                    profiles.map(function (entry) {
+                      return h('option', { key: entry, value: entry }, entry)
+                    }),
+                  ),
+                )
+              : null,
+
+            status && status.hints && status.hints.length
+              ? h(
+                  'ul',
                   {
-                    value: profilePick,
-                    style: Object.assign({}, inputStyle, { maxWidth: 240 }),
-                    onChange: function (event) {
-                      setProfilePick(event.target.value)
+                    style: {
+                      margin: '8px 0 0',
+                      paddingLeft: 16,
+                      fontSize: 11,
+                      lineHeight: 1.7,
+                      color: C.faint,
                     },
                   },
-                  h('option', { value: '' }, '(自动探测)'),
-                  profiles.map(function (entry) {
-                    return h('option', { key: entry, value: entry }, entry)
+                  status.hints.map(function (hint, index) {
+                    return h('li', { key: String(index) }, hint)
                   }),
-                ),
-              )
-            : null,
-
-          status && status.hints && status.hints.length
-            ? h(
-                'ul',
-                {
-                  style: {
-                    margin: '10px 0 0',
-                    paddingLeft: 18,
-                    fontSize: 11,
-                    lineHeight: 1.7,
-                    color: COLOR.dim,
-                  },
-                },
-                status.hints.map(function (hint, index) {
-                  return h('li', { key: String(index) }, hint)
-                }),
-              )
-            : null,
+                )
+              : null,
+          ),
         ),
       )
     }

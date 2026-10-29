@@ -35,9 +35,17 @@ const PACKAGE_NAME = '@dsh-feishu/dsh-plugin'
 
 const ENV_HEADER = '# dsh-feishu 凭据 —— 由 DSH 的飞书设置页生成，不要提交'
 
-/** managed block 的哨兵行，与 scripts/install.mjs 用同一对文案，两边可以互相接手。 */
-const BLOCK_START = '# >>> dsh-feishu managed block (由设置页 / scripts/install.mjs 维护，手改会被覆盖)'
-const BLOCK_END = '# <<< dsh-feishu managed block'
+/**
+ * managed block 的哨兵行，与 scripts/install.mjs 用同一对文案，两边可以互相接手。
+ *
+ * 定位只比**前缀**：括号里的括注是给人看的说明，两边演化速度不一样。曾经整行严格
+ * 比对，install.mjs 写「由 scripts/install.mjs 维护」而插件找「由设置页 / scripts/…」，
+ * 差几个字就 indexOf 落空 —— 明明挂载了却报「未挂载」。文案可以变，标记不能失配。
+ */
+const BLOCK_START_PREFIX = '# >>> dsh-feishu managed block'
+const BLOCK_END_PREFIX = '# <<< dsh-feishu managed block'
+const BLOCK_START = `${BLOCK_START_PREFIX} (由设置页 / scripts/install.mjs 维护，手改会被覆盖)`
+const BLOCK_END = BLOCK_END_PREFIX
 
 /** patch 里那一行 MCP entry 的 id 与它要加载的包（install.mjs:166-167 同款）。 */
 const MCP_ENTRY_ID = 'mcp-feishu'
@@ -352,7 +360,7 @@ function profileMentionsUs(profileDir: string): boolean {
   const pkgScopePath = path.join(profileDir, 'node_modules', ...PACKAGE_NAME.split('/'))
   if (statOrNull(pkgScopePath) !== null) return true
   const patchText = readTextOrNull(path.join(profileDir, 'cordis.patch.yml'))
-  if (patchText !== null && (patchText.includes(PACKAGE_NAME) || patchText.includes(BLOCK_START))) {
+  if (patchText !== null && (patchText.includes(PACKAGE_NAME) || patchText.includes(BLOCK_START_PREFIX))) {
     return true
   }
   const manifestText = readTextOrNull(path.join(profileDir, 'package.json'))
@@ -480,11 +488,26 @@ function renderManagedBlock(wrapperPath: string): string {
   return lines.join('\n')
 }
 
+/** 按行找哨兵，返回块在原文里的字符区间（含两端哨兵行）。 */
+function locateManagedBlock(text: string): { start: number; end: number } | null {
+  let offset = 0
+  let start = -1
+  for (const line of text.split('\n')) {
+    const marker = line.trim()
+    if (start < 0) {
+      if (marker.startsWith(BLOCK_START_PREFIX)) start = offset
+    } else if (marker.startsWith(BLOCK_END_PREFIX)) {
+      return { start, end: offset + line.length }
+    }
+    offset += line.length + 1
+  }
+  return null
+}
+
 function extractManagedBlock(text: string): string | null {
-  const start = text.indexOf(BLOCK_START)
-  const end = text.indexOf(BLOCK_END)
-  if (start < 0 || end <= start) return null
-  return text.slice(start, end + BLOCK_END.length)
+  const bounds = locateManagedBlock(text)
+  if (bounds === null) return null
+  return text.slice(bounds.start, bounds.end)
 }
 
 interface PatchSnapshot {
@@ -514,13 +537,12 @@ function applyManagedBlock(
   original: string,
   block: string,
 ): { text: string; mode: 'created' | 'updated' | 'unchanged' } {
-  const start = original.indexOf(BLOCK_START)
-  const end = original.indexOf(BLOCK_END)
-  if (start >= 0 && end > start) {
-    const current = original.slice(start, end + BLOCK_END.length)
+  const bounds = locateManagedBlock(original)
+  if (bounds !== null) {
+    const current = original.slice(bounds.start, bounds.end)
     if (current === block) return { text: original, mode: 'unchanged' }
-    const before = original.slice(0, start)
-    const after = original.slice(end + BLOCK_END.length)
+    const before = original.slice(0, bounds.start)
+    const after = original.slice(bounds.end)
     return { text: `${before.trimEnd()}\n${block}${after}`, mode: 'updated' }
   }
   const stripped = original.replace(/^\s*\[\s*\]\s*$/m, '').trimEnd()

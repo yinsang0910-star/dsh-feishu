@@ -155,8 +155,28 @@ function writeWrapper() {
 
 // ─────────────────────────── 3. 改 cordis.patch.yml ───────────────────────────
 
-const BLOCK_START = '# >>> dsh-feishu managed block (由 scripts/install.mjs 维护，手改会被覆盖)';
-const BLOCK_END = '# <<< dsh-feishu managed block';
+// 定位只比**前缀**（设置页插件同款做法）：括注是给人看的说明，两边文案演化速度不一样，
+// 整行严格比对一旦差几个字，就会把已存在的块当成不存在、再插一份进去。
+const BLOCK_START_PREFIX = '# >>> dsh-feishu managed block';
+const BLOCK_END_PREFIX = '# <<< dsh-feishu managed block';
+const BLOCK_START = `${BLOCK_START_PREFIX} (由设置页 / scripts/install.mjs 维护，手改会被覆盖)`;
+const BLOCK_END = BLOCK_END_PREFIX;
+
+/** 按行找哨兵，返回块在原文里的字符区间（含两端哨兵行）。 */
+function locateBlock(text) {
+  let offset = 0;
+  let start = -1;
+  for (const line of text.split('\n')) {
+    const marker = line.trim();
+    if (start < 0) {
+      if (marker.startsWith(BLOCK_START_PREFIX)) start = offset;
+    } else if (marker.startsWith(BLOCK_END_PREFIX)) {
+      return { start, end: offset + line.length };
+    }
+    offset += line.length + 1;
+  }
+  return null;
+}
 
 function yamlBlock() {
   // Windows 上 DSH 直接 spawn 一个 .cmd 会失败，必须走 cmd /c
@@ -187,12 +207,11 @@ function patchProfile() {
   let text = fs.existsSync(patchPath) ? fs.readFileSync(patchPath, 'utf8') : '';
   if (text.trim() === '') text = '[]\n';
 
-  const startIdx = text.indexOf(BLOCK_START);
-  const endIdx = text.indexOf(BLOCK_END);
+  const bounds = locateBlock(text);
 
-  if (startIdx >= 0 && endIdx > startIdx) {
-    const before = text.slice(0, startIdx);
-    const after = text.slice(endIdx + BLOCK_END.length);
+  if (bounds !== null) {
+    const before = text.slice(0, bounds.start);
+    const after = text.slice(bounds.end);
     text = before.trimEnd() + '\n' + yamlBlock() + after;
     log(`✓ 更新 ${patchPath} 里已有的 dsh-feishu 块`);
   } else {
@@ -215,13 +234,12 @@ function unpatchProfile() {
     return;
   }
   const text = fs.readFileSync(patchPath, 'utf8');
-  const startIdx = text.indexOf(BLOCK_START);
-  const endIdx = text.indexOf(BLOCK_END);
-  if (startIdx < 0 || endIdx < 0) {
+  const bounds = locateBlock(text);
+  if (bounds === null) {
     warn('配置里没有 dsh-feishu 块，无需回滚');
     return;
   }
-  const cleaned = (text.slice(0, startIdx).trimEnd() + '\n' + text.slice(endIdx + BLOCK_END.length))
+  const cleaned = (text.slice(0, bounds.start).trimEnd() + '\n' + text.slice(bounds.end))
     .replace(/\n{3,}/g, '\n\n')
     .trimEnd();
   fs.writeFileSync(patchPath, cleaned === '' ? '[]\n' : cleaned + '\n');
