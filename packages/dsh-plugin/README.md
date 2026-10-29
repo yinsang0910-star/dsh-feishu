@@ -5,10 +5,10 @@
 
 > 调研环境（2026-10-30，只读）
 > - DSH 运行时版本：`0.2.0-rc.2`（`…\@deepseek-ai\dsh\node_modules\@deepseek-ai\dsh-app-boot\package.json` 的 `version`）
-> - `DSH_HOME` = `C:\Users\苏元洛\.dsh`；日常 profile = `profiles\desktop`
+> - `DSH_HOME` = `%USERPROFILE%\.dsh`；日常 profile = `profiles\desktop`
 > - 本文用简写：
->   - `PURGE` = `C:\Users\苏元洛\.dsh\plugins\dsh-purge`（第三方完整样本）
->   - `NM` = `C:\Users\苏元洛\.dsh\profiles\node_modules\@deepseek-ai`（官方 ~200 个包）
+>   - `PURGE` = `%USERPROFILE%\.dsh\plugins\dsh-purge`（第三方完整样本）
+>   - `NM` = `%USERPROFILE%\.dsh\profiles\node_modules\@deepseek-ai`（官方 ~200 个包）
 >   - `APPBOOT` = `NM\dsh\node_modules\@deepseek-ai\dsh-app-boot\lib\index.js`（注意它在 `dsh` 自己的 node_modules 里，不在顶层 `NM`）
 
 ---

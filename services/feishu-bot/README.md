@@ -1,7 +1,7 @@
 # feishu-bot — G2 Agent 的飞书长连接机器人
 
-飞书里那个「G2 Agent / 咪咪喵喵教」就是它。跑在 PVE（192.168.1.200）的 `/opt/feishu-bot/bot.py`，
-用飞书官方 `lark_oapi` **长连接**（WSClient）收消息，SSH 到 agent（192.168.1.205）执行
+飞书里那个「G2 Agent / 咪咪喵喵教」就是它。跑在 PVE（192.168.1.10）的 `/opt/feishu-bot/bot.py`，
+用飞书官方 `lark_oapi` **长连接**（WSClient）收消息，SSH 到 agent（192.168.1.20）执行
 `dsh-task --profile headless`，把结果回飞书。
 
 ```
@@ -39,8 +39,8 @@
 ## 部署
 
 ```powershell
-. C:\Users\苏元洛\.pve600\vmctl.ps1    # 提供 $PLINK / $HOSTKEY / $PASSWORD
-cd D:\dsh-feishu\services\feishu-bot
+. <你的 vmctl.ps1>    # 它负责设置 $PLINK / $HOSTKEY / $PASSWORD
+cd <仓库>\services\feishu-bot
 
 .\deploy.ps1 -Check      # 只比对：PVE 上跑的和仓库里的是不是同一份
 .\deploy.ps1             # 部署：备份 → 上传 → 校验 → 重启 → 健康检查

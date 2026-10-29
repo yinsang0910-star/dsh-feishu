@@ -19,7 +19,7 @@
     回滚到远端最近一次部署前的备份，然后重启。
 
 .EXAMPLE
-    . C:\Users\苏元洛\.pve600\vmctl.ps1   # 提供 $PLINK / $HOSTKEY / $PASSWORD
+    . <你的 vmctl.ps1>    # 它负责设置 $PLINK / $HOSTKEY / $PASSWORD
     .\deploy.ps1 -Check
 
 .EXAMPLE
@@ -34,15 +34,15 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-# ── 连接参数：不在此文件硬编码，从 vmctl.ps1 的作用域或环境变量取 ──────────
-$PLINK    = if ($PLINK)    { $PLINK }    else { 'C:\Users\苏元洛\.pve600\tools\plink.exe' }
+# ── 连接参数：不在此文件硬编码。优先用当前作用域里已有的，其次读环境变量 ────
+$PLINK    = if ($PLINK)    { $PLINK }    else { $env:PLINK_PATH }
 $HOSTKEY  = if ($HOSTKEY)  { $HOSTKEY }  else { $env:PVE_HOSTKEY }
 $PASSWORD = if ($PASSWORD) { $PASSWORD } else { $env:PVE_PASSWORD }
-$PVEHOST  = if ($PVEHOST)  { $PVEHOST }  else { 'root@192.168.1.200' }
+$PVEHOST  = if ($PVEHOST)  { $PVEHOST }  else { 'root@192.168.1.10' }
 
-if (-not (Test-Path $PLINK)) { throw "找不到 plink：$PLINK" }
-if (-not $HOSTKEY)  { throw "缺少 hostkey。先执行：. C:\Users\苏元洛\.pve600\vmctl.ps1" }
-if (-not $PASSWORD) { throw "缺少密码。先执行：. C:\Users\苏元洛\.pve600\vmctl.ps1" }
+if (-not $PLINK -or -not (Test-Path $PLINK)) { throw "找不到 plink。设置环境变量 PLINK_PATH，或先 . 你的 vmctl.ps1（它会设 `$PLINK / `$HOSTKEY / `$PASSWORD）" }
+if (-not $HOSTKEY)  { throw "缺少 hostkey（ssh 主机指纹，形如 SHA256:xxx）。设环境变量 PVE_HOSTKEY，或先 . 你的 vmctl.ps1" }
+if (-not $PASSWORD) { throw "缺少密码。设环境变量 PVE_PASSWORD，或先 . 你的 vmctl.ps1" }
 
 $RemoteDir  = '/opt/feishu-bot'
 $RemoteFile = "$RemoteDir/bot.py"
@@ -86,7 +86,7 @@ if ($Check) {
         Write-Host '✗ 不一致：PVE 上的 bot.py 与仓库不同。' -ForegroundColor Yellow
         Write-Host '  可能是有人在 PVE 上直接改过（那些改动没有进仓库，注意别覆盖丢掉）。' -ForegroundColor Yellow
         Write-Host '  想看差在哪：' -ForegroundColor Yellow
-        Write-Host "    plink ... 'cat $RemoteFile' > \$env:TEMP\remote_bot.py; code \$env:TEMP\remote_bot.py bot.py"
+        Write-Host "    plink ... 'cat $RemoteFile' > `$env:TEMP\remote_bot.py; code `$env:TEMP\remote_bot.py bot.py"
     }
     return
 }

@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """飞书门房 —— 600 G2 的语音遥控器（长连接，无需公网 IP）
 
-它自己几乎不干活：听懂的那一半全部转给 agent 工作站（192.168.1.205）上的 DSH，
+它自己几乎不干活：听懂的那一半全部转给 agent 工作站上的 DSH，
 机器人只负责认人、记会话、报进度、把危险动作用按钮拦一下。
 
 12 条决策的落点：
@@ -76,19 +76,20 @@ DEFAULTS = {
     "report_hour": 8,
     "soft_timeout_sec": 1800,
     "max_inline_lines": 30,
-    "agent_host": "192.168.1.205",
+    "agent_host": "192.168.1.100",
     "agent_user": "agent",
     "agent_key": "/root/.ssh/agent_rsa",
     "agent_cwd": "/home/agent/work",
     "agent_root": "/home/agent/work",
     "dsh_cmd": "/home/agent/.local/bin/dsh-task",
     "pve_host": "127.0.0.1",
+    "pve_label": "",          # /status 里怎么称呼这台机器；留空则显示 "PVE"
     "report_chat_id": "",
     "usage_url": "https://opencode.ai/zen/go/v1/usage",
     "usage_key_file": "/home/agent/.config/dsh/opencode-go.env",
     # dsh-feishu 网关（可选）。它自己不持有长连接，只做「按钮答案中转站」：
     # 我们收到 card.action 后把 answer POST 过去，MCP 那边的 feishu_ask 就能秒回。
-    "gateway_url": "http://192.168.1.205:18642",
+    "gateway_url": "http://192.168.1.100:18642",
     "gateway_token": "",
 }
 
@@ -496,7 +497,12 @@ def do_status():
         "df -h / /home/agent/work 2>/dev/null | tail -n +2; "
         "systemctl is-active dsh-web 2>/dev/null | sed 's/^/dsh-web: /'"
     )
-    return "【PVE 宿主 192.168.1.200】\n%s\n\n【agent 工作站 192.168.1.205】\n%s" % (a[1], b[1])
+    return "【PVE 宿主 %s】\n%s\n\n【agent 工作站 %s】\n%s" % (
+        CONF.get("pve_label") or "PVE",
+        a[1],
+        CONF.get("agent_host") or "agent",
+        b[1],
+    )
 
 
 # ─────────────────────────── 危险动作审批 ───────────────────────────

@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 88 1000 372" width="1000" height="372" role="img" aria-label="dsh-feishu 架构">
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#94A3B8"/>
+    </marker>
+    <linearGradient id="fbg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#F2F6FF"/><stop offset="1" stop-color="#E8EFFF"/>
+    </linearGradient>
+    <linearGradient id="bbg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#F5F3FF"/><stop offset="1" stop-color="#EDE9FE"/>
+    </linearGradient>
+    <linearGradient id="abg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#F0FDFA"/><stop offset="1" stop-color="#E0F7F4"/>
+    </linearGradient>
+    <style>
+      .t  { font-family: ui-sans-serif,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif; }
+      .h  { font-size: 17px; font-weight: 600; }
+      .h2 { font-size: 15px; font-weight: 600; }
+      .b  { font-size: 13px; fill: #475569; }
+      .c  { font-size: 12px; fill: #64748B; }
+      .m  { font-size: 11px; fill: #94A3B8; letter-spacing: .02em; }
+      .lbl{ font-size: 12px; fill: #64748B; }
+    </style>
+  </defs>
+
+  <rect x="0" y="88" width="1000" height="372" fill="#FAFBFC"/>
+
+  <!-- 飞书 -->
+  <rect x="40" y="150" width="200" height="140" rx="14" fill="url(#fbg)" stroke="#3370FF" stroke-width="1.5"/>
+  <rect x="60" y="170" width="26" height="22" rx="6" fill="none" stroke="#3370FF" stroke-width="2"/>
+  <path d="M68,192 v6 l7,-6" fill="none" stroke="#3370FF" stroke-width="2" stroke-linejoin="round"/>
+  <text class="t h" x="96" y="188" fill="#1E3A8A">飞书</text>
+  <text class="t b" x="60" y="222">手机 · 桌面客户端</text>
+  <text class="t c" x="60" y="246">群聊 / 私聊 / 卡片按钮</text>
+  <text class="t c" x="60" y="268">文件 · 多维表格 · 云文档</text>
+
+  <!-- bot.py -->
+  <rect x="330" y="150" width="240" height="140" rx="14" fill="url(#bbg)" stroke="#7C5CFA" stroke-width="1.5"/>
+  <text class="t h" x="352" y="184" fill="#4C1D95">dsh-feishu bot</text>
+  <text class="t b" x="352" y="212">长连接 · 白名单 · 队列</text>
+  <text class="t c" x="352" y="236">进度卡 · 危险动作审批按钮</text>
+  <text class="t c" x="352" y="258">每人一份独立记忆 · PVE / VPS 常驻</text>
+
+  <!-- agent -->
+  <rect x="660" y="100" width="300" height="240" rx="14" fill="url(#abg)" stroke="#0D9488" stroke-width="1.5"/>
+  <text class="t h" x="682" y="132" fill="#115E59">agent 工作站</text>
+  <line x1="682" y1="146" x2="938" y2="146" stroke="#99F6E4" stroke-width="1.5"/>
+  <circle cx="690" cy="172" r="3" fill="#0D9488"/>
+  <text class="t b" x="704" y="177">dsh --profile headless</text>
+  <circle cx="690" cy="200" r="3" fill="#0D9488"/>
+  <text class="t b" x="704" y="205">25 个飞书 MCP 工具</text>
+  <circle cx="690" cy="228" r="3" fill="#0D9488"/>
+  <text class="t b" x="704" y="233">pushfile：把本地文件发出去</text>
+  <circle cx="690" cy="256" r="3" fill="#0D9488"/>
+  <text class="t b" x="704" y="261">gateway :18642（问答回传）</text>
+  <text class="t m" x="682" y="300">systemd --user · 常驻 · 断线自愈</text>
+
+  <!-- 飞书 <-> bot -->
+  <line x1="244" y1="220" x2="326" y2="220" stroke="#94A3B8" stroke-width="2"
+        marker-start="url(#ar)" marker-end="url(#ar)"/>
+  <text class="t lbl" x="285" y="208" text-anchor="middle">WebSocket</text>
+
+  <!-- bot -> agent -->
+  <line x1="574" y1="220" x2="656" y2="220" stroke="#94A3B8" stroke-width="2" marker-end="url(#ar)"/>
+  <text class="t lbl" x="615" y="208" text-anchor="middle">SSH</text>
+
+  <!-- agent -> 飞书（发东西回去）-->
+  <path d="M810,340 V398 Q810,424 788,424 H162 Q140,424 140,398 V294"
+        fill="none" stroke="#94A3B8" stroke-width="2" stroke-dasharray="6 5" marker-end="url(#ar)"/>
+  <text class="t lbl" x="510" y="412" text-anchor="middle">OpenAPI：发文件 / 卡片 / 写文档</text>
+
+  <text class="t m" x="40" y="446">feishu-bot 只做调度；真正干活、真正发文件的是 agent 上的 MCP server。</text>
+</svg>

@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 1280px; height: 640px; overflow: hidden; }
+  body {
+    font-family: "Segoe UI", "Microsoft YaHei", ui-sans-serif, -apple-system, sans-serif;
+    background: #0A0F1E;
+    position: relative;
+  }
+  .glow1 {
+    position: absolute; width: 900px; height: 900px; left: -260px; top: -380px;
+    background: radial-gradient(circle, rgba(76,125,255,.34) 0%, rgba(76,125,255,0) 62%);
+  }
+  .glow2 {
+    position: absolute; width: 700px; height: 700px; right: -180px; bottom: -320px;
+    background: radial-gradient(circle, rgba(13,148,136,.22) 0%, rgba(13,148,136,0) 65%);
+  }
+  .grid {
+    position: absolute; inset: 0;
+    background-image: linear-gradient(rgba(255,255,255,.035) 1px, transparent 1px),
+                      linear-gradient(90deg, rgba(255,255,255,.035) 1px, transparent 1px);
+    background-size: 44px 44px;
+    mask-image: radial-gradient(circle at 30% 40%, #000 20%, transparent 78%);
+  }
+  .wrap { position: relative; display: flex; height: 100%; padding: 66px 68px; gap: 54px; align-items: center; }
+
+  /* 左：品牌 */
+  .brand { width: 452px; flex: none; }
+  .brand img { width: 84px; height: 84px; display: block; filter: drop-shadow(0 10px 26px rgba(37,71,201,.55)); }
+  .name {
+    margin-top: 30px; font-size: 62px; font-weight: 700; letter-spacing: -.02em;
+    color: #F8FAFC; line-height: 1; font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  }
+  .name em { font-style: normal; color: #6E96FF; }
+  .tag {
+    margin-top: 22px; font-size: 21px; line-height: 1.5; color: #9AA9C4; font-weight: 400;
+  }
+  .tag b { color: #D7E1F5; font-weight: 600; }
+  .chips { margin-top: 34px; display: flex; flex-wrap: wrap; gap: 10px; }
+  .chip {
+    font-size: 14.5px; padding: 7px 14px; border-radius: 999px; color: #B9C7E2;
+    background: rgba(110,150,255,.10); border: 1px solid rgba(110,150,255,.26);
+  }
+
+  /* 右：终端卡片 */
+  .card {
+    flex: 1; height: 100%; max-height: 476px;
+    background: linear-gradient(180deg, #0D1424, #0A101C);
+    border: 1px solid rgba(255,255,255,.085); border-radius: 18px;
+    box-shadow: 0 40px 90px rgba(0,0,0,.55), inset 0 1px 0 rgba(255,255,255,.05);
+    overflow: hidden; display: flex; flex-direction: column;
+  }
+  .bar {
+    height: 44px; flex: none; display: flex; align-items: center; gap: 8px;
+    padding: 0 18px; border-bottom: 1px solid rgba(255,255,255,.06);
+    background: rgba(255,255,255,.015);
+  }
+  .dot { width: 11px; height: 11px; border-radius: 50%; }
+  .d1 { background: #FF5F57; } .d2 { background: #FEBC2E; } .d3 { background: #28C840; }
+  .bar span { margin-left: 10px; font-size: 13px; color: #5C6B85; font-family: ui-monospace, Consolas, monospace; }
+  .term {
+    flex: 1; padding: 26px 26px 20px; font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+    font-size: 18px; line-height: 1.6; color: #C6D2E6; overflow: hidden;
+    display: flex; flex-direction: column; justify-content: center;
+  }
+  .u { color: #EFE3B8; }
+  .u::before { content: "› "; color: #6E96FF; }
+  .r { margin: 6px 0 18px; padding-left: 21px; color: #7E8DA8; }
+  .r::before { content: "● "; color: #2DD4BF; }
+  .r b { color: #E4EBF7; font-weight: 600; }
+  .r:last-child { margin-bottom: 0; }
+</style>
+</head>
+<body>
+  <div class="glow1"></div>
+  <div class="glow2"></div>
+  <div class="grid"></div>
+  <div class="wrap">
+    <div class="brand">
+      <img src="logo.svg" alt="">
+      <div class="name">dsh-feishu</div>
+      <div class="tag"><b>飞书</b> as an operating surface<br>for <b>DeepSeek Harness</b></div>
+      <div class="chips">
+        <div class="chip">25 MCP tools</div>
+        <div class="chip">real file delivery</div>
+        <div class="chip">no public IP</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="bar"><i class="dot d1"></i><i class="dot d2"></i><i class="dot d3"></i><span>feishu · mimi-group</span></div>
+      <div class="term">
+        <div class="u">把上周的纳米技术报告发我</div>
+        <div class="r">找到 <b>3 份</b>，已发到群里</div>
+        <div class="u">建一张读书清单的多维表格</div>
+        <div class="r">已建好：<b>4 个字段</b> / 1 条记录</div>
+        <div class="u">跑一下这个季度的高温超导文献，做完汇报</div>
+        <div class="r">排在 <b>第 2 位</b>，进度会更新在这张卡上</div>
+        <div class="u">顺便把我拉进项目群</div>
+        <div class="r">已邀请你加入 <b>「G2 指挥群」</b></div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

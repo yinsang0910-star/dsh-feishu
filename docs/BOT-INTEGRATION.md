@@ -16,7 +16,7 @@
 `DEFAULTS` 里加一条：
 
 ```python
-    "gateway_url": "http://192.168.1.205:18642",
+    "gateway_url": "http://192.168.1.20:18642",
 ```
 
 同时写进了 `/opt/feishu-bot/config.json`，便于不改代码就调整。
@@ -68,7 +68,7 @@ def gateway_post(path, body, timeout=3):
 ## 为什么卡片按钮的字段名不一样
 
 - 审批卡（本仓库旧代码）：`{act: "approve", tok: "1234"}`
-- 提问卡（`@dsh-feishu/core` 的 `askCard`）：`{act: "answer", token: "7e121b6a", answer: "确认发车"}`
+- 提问卡（`@dsh-feishu/core` 的 `askCard`）：`{act: "answer", token: "a1b2c3d4", answer: "确认发车"}`
 
 两者不通用，`on_card_action` 里得分别读。合并成一种会更干净，但会牵动审批流程，没在这次动。
 
@@ -86,17 +86,17 @@ systemctl restart feishu-bot
 ## 实测记录（2026-10-30 02:04）
 
 ```
-[feishu-gateway] watch {"token":"7e121b6a","chatId":"oc_7c2899..."}
-[feishu-gateway] 外部投递答案 {"token":"7e121b6a","accepted":true,"text":"确认发车"}
-[feishu-gateway] 外部投递答案 {"token":"7e121b6a","accepted":false,"text":"再等等"}
-[feishu-gateway] 外部投递答案 {"token":"7e121b6a","accepted":false,"text":"确认发车"}
+[feishu-gateway] watch {"token":"a1b2c3d4","chatId":"oc_7c2899..."}
+[feishu-gateway] 外部投递答案 {"token":"a1b2c3d4","accepted":true,"text":"确认发车"}
+[feishu-gateway] 外部投递答案 {"token":"a1b2c3d4","accepted":false,"text":"再等等"}
+[feishu-gateway] 外部投递答案 {"token":"a1b2c3d4","accepted":false,"text":"确认发车"}
 ```
 
 MCP 侧：
 
 ```
-[dsh-feishu-mcp] feishu_ask token=7e121b6a 已发卡片 om_x100b610ce69af0a4cd12225b31ea933，网关在线（按钮可用）
-[dsh-feishu-mcp] feishu_ask token=7e121b6a 网关投递回答（button，21880ms）
+[dsh-feishu-mcp] feishu_ask token=a1b2c3d4 已发卡片 om_x100b610ce69af0a4cd12225b31ea933，网关在线（按钮可用）
+[dsh-feishu-mcp] feishu_ask token=a1b2c3d4 网关投递回答（button，21880ms）
 ```
 
 模型拿到 `用户回答：确认发车` 并正常收尾。
@@ -107,8 +107,8 @@ MCP 侧：
 
 | 组件 | 位置 | 托管方式 |
 |---|---|---|
-| bot.py | PVE `192.168.1.200:/opt/feishu-bot/bot.py` | `systemctl status feishu-bot` |
-| gateway | agent `192.168.1.205:~/dsh-feishu-gateway/gateway.mjs` | `systemctl --user status dsh-feishu-gateway`（Linger 已开） |
+| bot.py | PVE `192.168.1.10:/opt/feishu-bot/bot.py` | `systemctl status feishu-bot` |
+| gateway | agent `192.168.1.20:~/dsh-feishu-gateway/gateway.mjs` | `systemctl --user status dsh-feishu-gateway`（Linger 已开） |
 | gateway 依赖 | agent `~/dsh-feishu-gateway/node_modules`（`@larksuiteoapi/node-sdk`） | npm |
 | MCP bundle | agent `~/.local/bin/dsh-feishu-mcp.mjs` + wrapper `dsh-feishu-mcp` | DSH 按需拉起 |
 | 密钥 | agent `~/.config/dsh/feishu.env`（0600） | systemd EnvironmentFile |
