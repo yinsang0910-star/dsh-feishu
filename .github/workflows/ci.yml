@@ -1,0 +1,52 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: 类型检查（4 个包）
+        run: pnpm -r typecheck
+
+      - name: 构建
+        run: pnpm build
+
+      - name: 网关单测（不连飞书）
+        run: node scripts/test-gateway.mjs
+
+      - name: 打包冒烟（确认 bundle 能产出）
+        run: |
+          pnpm build:single
+          node --check dist-single/dsh-feishu-mcp.mjs
+          pnpm exec esbuild packages/gateway/src/index.ts \
+            --bundle --platform=node --format=esm --target=node20 \
+            --external:@larksuiteoapi/node-sdk \
+            --external:bufferutil --external:utf-8-validate \
+            --outfile=dist-single/gateway-thin.mjs --log-level=warning
+          node --check dist-single/gateway-thin.mjs
+
+# 注意：scripts/smoke.mjs 需要真实飞书凭据，CI 里不跑。
+# 本地验证用：pnpm smoke / pnpm smoke:write
