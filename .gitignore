@@ -16,3 +16,10 @@ downloads/
 # 只留在 PVE 的 /opt/feishu-bot/ 上，权限 0600。仓库里只有 *.example。
 services/feishu-bot/config.json
 services/feishu-bot/config.env
+
+# DSH 插件的构建产物必须入库：dsh plugin add github:...#<commit> 直接加载
+# packages/dsh-plugin/dist/index.js，仓库里没有这个文件就装不起来。
+# 其余包的 dist/ 仍然忽略。
+!packages/dsh-plugin/dist/
+!packages/dsh-plugin/dist/**
+packages/dsh-plugin/dist/*.map
