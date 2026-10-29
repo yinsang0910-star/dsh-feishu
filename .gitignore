@@ -23,3 +23,5 @@ services/feishu-bot/config.env
 !packages/dsh-plugin/dist/
 !packages/dsh-plugin/dist/**
 packages/dsh-plugin/dist/*.map
+# 发布仓库的生成目录（单向同步产物，可随时删掉重建）
+.publish/
