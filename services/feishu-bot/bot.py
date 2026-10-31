@@ -88,9 +88,10 @@ DEFAULTS = {
     # 随时可用 /要@ /免@ 切换，会写回 config.json。
     "group_require_mention": False,
     # 模型与思考强度：写在这里而不是改 agent 上的 profile，--patch 单次生效、随时可退。
-    # model 留空 = 用 profile 自己的默认；reasoning_effort 取 off/low/high/max。
+    # model 留空 = 用 profile 自己的默认；reasoning_effort 取 auto/off/low/high/max
+    # （auto = 每条任务按内容现算一档，进度卡上写明挑了哪档）。
     "model": "deepseek-v4.1-flash",
-    "reasoning_effort": "high",
+    "reasoning_effort": "auto",
     "model_override_path": "/home/agent/.cache/feishu/model-override.yml",
     "agent_host": "192.168.1.100",
     "agent_user": "agent",
@@ -116,7 +117,7 @@ INFO = """直接说要做什么就行，我会转给 agent 工作站上的 DSH�
 
 换脑子：
 /模型    现在用哪个模型，按钮直接换（/模型 列表 看全部）
-/思考    思考强度：不思考 / 省着点 / 正常 / 想到底
+/思考    reasoningEffort：auto / off / low / high / max
 
 看状态：
 /状态    在跑什么、排队几个、用的什么脑子
@@ -879,8 +880,19 @@ class Task(object):
 # 这一次任务，随时能退。
 
 # agent-default-model 的 schema 只认这四档（实测 deepseek-v4.1-flash 只吃 low/high/max）。
-EFFORTS = ("off", "low", "high", "max")
-EFFORT_ZH = {"off": "不思考", "low": "省着点", "high": "正常", "max": "想到底"}
+# 显示一律用官方档位名，不加自造说法；auto 是本机器人加的伪档，起任务时按任务内容现算。
+EFFORTS = ("auto", "off", "low", "high", "max")
+FIXED_EFFORTS = ("off", "low", "high", "max")
+EFFORT_NOTE = {
+    "auto": "按任务自动定档",
+    "off": "关闭思考",
+    "low": "低",
+    "high": "高",
+    "max": "最高",
+}
+
+# 先禁用掉不再使用的模型：v4-pro 贵且默认不用，留着容易被误点。
+BLOCKED_MODELS = ("deepseek-v4-pro",)
 
 # 目录真源：agent 上那份 pi-ai 自带的模型清单。用 glob 兜住版本路径变化。
 _CATALOG_GLOB = (
@@ -892,12 +904,21 @@ _CATALOG_TTL = 600
 
 # 卡片上默认摆出来的几个（都是实测能跑的），其余走「看全部」。
 MODEL_PICKS = [
-    ("deepseek-v4.1-flash", "日常够用，便宜"),
-    ("deepseek-v4-pro", "最会想，贵一些"),
+    ("deepseek-v4.1-flash", "默认，日常够用"),
     ("glm-5.3-flash", "同价位替补"),
     ("claude-haiku-5-5", "长文/看图稳"),
     ("gpt-6-luna", "另一种口味"),
 ]
+
+# auto 档的判据：命中的词、任务长度。宁可判高一点，也不要判低到答不动。
+_DEEP_HINTS = (
+    "仔细", "彻底", "深入", "审查", "审计", "证明", "推导", "论证", "重构",
+    "架构", "设计", "权衡", "为什么", "根因", "排查", "优化", "基准",
+    "对比分析", "方案", "批改", "复盘",
+)
+_LIGHT_HINTS = (
+    "翻译", "改成", "格式化", "润色", "查一下", "是什么", "多少个", "列一下", "回答",
+)
 
 
 def _catalog_script():
@@ -950,16 +971,48 @@ def _model_label(mid):
     return mid
 
 
-def push_model_override():
-    """把当前选择写成一层 patch，让 dsh 启动时叠上去。"""
-    path = CONF.get("model_override_path") or ""
-    if not path:
-        return False
-    model = (CONF.get("model") or "").strip()
-    effort = (CONF.get("reasoning_effort") or "").strip()
-    if not model and not effort:
-        run_agent("rm -f %s" % shlex.quote(path), timeout=20)
-        return True
+def decide_effort(text):
+    """auto 档：按这条任务的样子挑一个官方档位，返回 (档位, 一句理由)。"""
+    t = (text or "").strip()
+    n = len(t)
+    deep = next((h for h in _DEEP_HINTS if h in t), "")
+    if deep:
+        return "max", "提到「%s」" % deep
+    if n > 1200:
+        return "max", "任务 %d 字，比较长" % n
+    if n <= 15:
+        return "low", "任务只有 %d 字" % n
+    light = next((h for h in _LIGHT_HINTS if h in t), "")
+    if light and n <= 60:
+        return "low", "「%s」这类轻活" % light
+    return "high", "常规任务"
+
+
+def resolve_effort(task):
+    """这条任务实际用哪一档；auto 就现算，结果记在 task 上给进度卡用。"""
+    cur = (CONF.get("reasoning_effort") or "").strip() or "high"
+    if cur != "auto":
+        task.effort_used = cur
+        task.effort_why = ""
+        return cur
+    eff, why = decide_effort(task.text)
+    task.effort_used = eff
+    task.effort_why = why
+    return eff
+
+
+def override_path(effort):
+    """每个档位一份 overlay：同时跑几条任务也不会互相覆盖。"""
+    base = (CONF.get("model_override_path") or "").strip()
+    if not base:
+        return ""
+    d, _, f = base.rpartition("/")
+    stem = f[:-4] if f.endswith(".yml") else f
+    name = "%s-%s.yml" % (stem, effort)
+    return ("%s/%s" % (d, name)) if d else name
+
+
+def _override_body(model, effort):
     body = (
         "- id: agent-default-model\n"
         "  name: \"@deepseek-ai/dsh-agent-default-model\"\n"
@@ -970,20 +1023,42 @@ def push_model_override():
         body += "    model: %s\n" % model
     if effort:
         body += "    reasoningEffort: %s\n" % effort
-    q = shlex.quote(path)
-    cmd = (
-        "mkdir -p \"$(dirname %s)\"; cat > %s.tmp <<'YML'\n%sYML\nmv %s.tmp %s && echo OK"
-        % (q, q, body, q, q)
-    )
-    code, out = run_agent(cmd, timeout=30)
+    return body
+
+
+def push_model_override():
+    """当前模型 × 四个官方档位各写一份 patch，起任务时按实际档位挑一份叠上去。"""
+    base = (CONF.get("model_override_path") or "").strip()
+    if not base:
+        return False
+    model = (CONF.get("model") or "").strip()
+    effort = (CONF.get("reasoning_effort") or "").strip()
+    if not model and not effort:
+        paths = [shlex.quote(base)] + [shlex.quote(override_path(e)) for e in FIXED_EFFORTS]
+        run_agent("rm -f %s" % " ".join(p for p in paths if p), timeout=20)
+        return True
+    parts = []
+    for e in FIXED_EFFORTS:
+        p = override_path(e)
+        if not p:
+            return False
+        q = shlex.quote(p)
+        parts.append(
+            "mkdir -p \"$(dirname %s)\"; cat > %s.tmp <<'YML'\n%sYML\nmv %s.tmp %s"
+            % (q, q, _override_body(model, e), q, q)
+        )
+    code, out = run_agent(" && ".join(parts) + " && echo OK", timeout=60)
     ok = "OK" in out
-    log.info("模型覆盖写入 %s: model=%s effort=%s ok=%s", path, model, effort, ok)
+    log.info("模型覆盖写入 %s-<档>.yml: model=%s effort=%s ok=%s", base, model, effort, ok)
     return ok
 
 
-def verify_choice(timeout=150):
+def verify_choice(effort=None, timeout=150):
     """真跑一次最短任务，确认这个「模型+档位」组合 provider 认。"""
-    path = CONF.get("model_override_path") or ""
+    effort = (effort or CONF.get("reasoning_effort") or "").strip()
+    if effort in ("", "auto"):
+        effort = "high"          # auto 用一个代表档验证模型本身可用
+    path = override_path(effort)
     if not path:
         return True, ""
     cmd = "cd %s; %s --patch %s --json '回答一个字：好'" % (
@@ -992,7 +1067,7 @@ def verify_choice(timeout=150):
     code, out = run_agent(cmd, timeout=timeout)
     if "UNSUPPORTED_REASONING_EFFORT" in out:
         m = re.search(r'does not support reasoning effort "([^"]+)"', out)
-        return False, "这个模型不吃「%s」这一档" % (m.group(1) if m else CONF.get("reasoning_effort"))
+        return False, "这个模型不支持 reasoningEffort「%s」" % (m.group(1) if m else effort)
     if "MISSING_CREDENTIAL" in out or "INVALID_CREDENTIAL" in out:
         return False, "这个模型当前凭据用不了"
     if re.search(r'"type":"final"', out):
@@ -1006,6 +1081,9 @@ def apply_choice(model=None, effort=None):
     old_model = CONF.get("model")
     old_effort = CONF.get("reasoning_effort")
     if model is not None:
+        if model in BLOCKED_MODELS:
+            return False, "%s 已禁用，当前只用 %s。" % (
+                model, CONF.get("model") or "deepseek-v4.1-flash")
         # dsh 遇到不认识的模型名不报错，会静默回落到能用的那个，
         # 所以「试跑成功」证明不了名字对——先拿清单核对一遍。
         known = {r["id"] for r in fetch_models()}
@@ -1015,6 +1093,8 @@ def apply_choice(model=None, effort=None):
                 model,
                 ("\n相近的：" + "、".join(near)) if near else "\n发 /模型 列表 看全部。",
             )
+    if effort is not None and effort not in EFFORTS:
+        return False, "reasoningEffort 只有 %s 这几档。" % " / ".join(EFFORTS)
     if model is not None:
         CONF["model"] = model
     if effort is not None:
@@ -1025,31 +1105,36 @@ def apply_choice(model=None, effort=None):
         save_conf()
         push_model_override()
         return False, "写不进 agent 机上的配置，已退回原样。"
-    ok, why = verify_choice()
+    ok, why = verify_choice(effort=effort or CONF.get("reasoning_effort"))
     if not ok:
         CONF["model"], CONF["reasoning_effort"] = old_model, old_effort
         save_conf()
         push_model_override()
-        return False, "%s，已经退回 %s（%s）。" % (
+        return False, "%s，已经退回 %s / %s。" % (
             why,
             _model_label(old_model or "") if old_model else "默认模型",
-            EFFORT_ZH.get(old_effort or "", old_effort or "默认"),
+            old_effort or "默认档",
         )
     return True, ""
 
 
 def _effort_line():
-    e = CONF.get("reasoning_effort") or ""
-    return EFFORT_ZH.get(e, e or "默认")
+    e = (CONF.get("reasoning_effort") or "").strip()
+    if not e:
+        return "跟 profile 默认走"
+    if e == "auto":
+        return "auto（按任务自动定档）"
+    return e
 
 
 def effort_card():
     cur = CONF.get("reasoning_effort") or ""
     btns = []
     for e in EFFORTS:
+        label = ("✓ " if e == cur else "") + e
         btns.append({
             "tag": "button",
-            "text": {"tag": "plain_text", "content": ("✓ " if e == cur else "") + EFFORT_ZH[e]},
+            "text": {"tag": "plain_text", "content": label},
             "type": "primary" if e == cur else "default",
             "value": {"act": "set_effort", "v": e},
         })
@@ -1057,13 +1142,14 @@ def effort_card():
         "config": {"wide_screen_mode": True, "update_multi": True},
         "header": {
             "template": "indigo",
-            "title": {"tag": "plain_text", "content": "思考强度"},
+            "title": {"tag": "plain_text", "content": "reasoningEffort"},
         },
         "elements": [
             {"tag": "div", "text": {"tag": "lark_md",
                                     "content": "现在是 **%s**（`%s`）。" % (_effort_line(), cur or "未设")}},
             {"tag": "div", "text": {"tag": "lark_md",
-                                    "content": "往右越贵越慢：不思考最快，想到底最费。\n"
+                                    "content": "官方四档：`off` 关闭思考，`low` / `high` / `max` 深度递增。\n"
+                                               "`auto` 由机器人按这条任务的样子现挑一档，进度卡上会写明挑了哪档、为什么。\n"
                                                "不同模型支持的档不一样，切了跑不动我会自动退回并告诉你。"}},
             {"tag": "action", "actions": btns},
             {"tag": "note", "elements": [{"tag": "plain_text",
@@ -1114,7 +1200,7 @@ def model_card():
         }],
     })
     els.append({"tag": "note", "elements": [{"tag": "plain_text",
-                                             "content": "也可以直接发：/模型 deepseek-v4-pro"}]})
+                                             "content": "也可以直接发：/模型 deepseek-v4.1-flash"}]})
     return {
         "config": {"wide_screen_mode": True, "update_multi": True},
         "header": {"template": "blue", "title": {"tag": "plain_text", "content": "模型"}},
@@ -1137,8 +1223,10 @@ def models_text():
     if not rows:
         return "读不到模型清单（agent 上找不到 pi-ai 的目录文件）。"
     cur = CONF.get("model") or ""
-    lines = ["可用模型（%d 个，来自 agent 上那份 DSH 的清单）：" % len(rows)]
-    for r in sorted(rows, key=lambda x: (float(x["in"] or 0) if x["in"] not in ("", "None") else 0)):
+    usable = [r for r in rows if r["id"] not in BLOCKED_MODELS]
+    lines = ["可用模型（%d 个，已排除禁用的 %s）："
+             % (len(usable), "、".join(BLOCKED_MODELS) or "无")]
+    for r in sorted(usable, key=lambda x: (float(x["in"] or 0) if x["in"] not in ("", "None") else 0)):
         mark = "▶" if r["id"] == cur else " "
         cost = "$%s/$%s" % (r["in"], r["out"]) if r["in"] not in ("", "None") else "免费"
         lines.append("%s %-30s %-9s %s%s" % (
@@ -1159,7 +1247,7 @@ def help_card():
                                            "要文件就说「把 XX 的 Word 发我」，它会真的传过来。"}},
         block("换脑子", [
             "`/模型` 看现在用哪个，按钮直接换",
-            "`/思考` 换思考强度（不思考 / 省着点 / 正常 / 想到底）",
+            "`/思考` reasoningEffort：`auto` / `off` / `low` / `high` / `max`",
         ]),
         block("看状态", [
             "`/状态` 在跑什么、排队几个、机器负载",
@@ -1203,9 +1291,13 @@ def dsh_argv(task):
             CONF["dsh_cmd"],
         )
     )
-    # 模型/思考强度走单次 patch 覆盖：改的是这一趟，不碰 profile 本体
-    patch_path = (CONF.get("model_override_path") or "").strip()
-    if patch_path and (CONF.get("model") or CONF.get("reasoning_effort")):
+    # 模型/思考强度走单次 patch 覆盖：改的是这一趟，不碰 profile 本体。
+    # auto 档在 start_task 里已算成具体档位（task.effort_used），这里按档挑对应那份 overlay。
+    effort = getattr(task, "effort_used", None) or (CONF.get("reasoning_effort") or "").strip()
+    if effort == "auto":
+        effort = "high"
+    patch_path = override_path(effort) if effort else ""
+    if patch_path:
         cmd += " --patch %s" % shlex.quote(patch_path)
     cmd += " --json"
     if task.session_id:
@@ -1275,6 +1367,13 @@ def build_progress_card(task):
     if not rows:
         rows.append("_正在想…_")
     head = (getattr(task, "label", None) or task.text or "").replace("\n", " ")[:70]
+    # auto 档要让人看得见判成了哪一档、为什么——不然「自动」等于黑箱
+    auto_note = ""
+    if (CONF.get("reasoning_effort") or "") == "auto":
+        used = getattr(task, "effort_used", "") or ""
+        why = getattr(task, "effort_why", "") or ""
+        if used:
+            auto_note = "　·　reasoningEffort auto → %s（%s）" % (used, why or "常规任务")
     return {
         "config": {"wide_screen_mode": True, "update_multi": True},
         "header": {
@@ -1289,9 +1388,10 @@ def build_progress_card(task):
                 "tag": "note",
                 "elements": [{
                     "tag": "plain_text",
-                    "content": "已用 %s · 第 %d 步 · %s"
+                    "content": "已用 %s · 第 %d 步 · %s%s"
                                % (_dur(_seconds_of(task)), max(total, 1),
-                                  task.cwd.rstrip("/").rsplit("/", 1)[-1] or task.cwd),
+                                  task.cwd.rstrip("/").rsplit("/", 1)[-1] or task.cwd,
+                                  auto_note),
                 }],
             },
         ],
@@ -1558,9 +1658,12 @@ def start_task(open_id, chat_id, text, cwd=None, approved=False, label=None):
     cwd = cwd or cur_cwd(open_id)
     sid = STATE["sessions"].get(sess_key(open_id, cwd))
     task = Task(open_id, chat_id, text, sid, approved, cwd, label)
+    resolve_effort(task)          # auto 档在这里定成具体档位，进度卡上会写明
     # ⑤ 一条进度卡，原地刷新 —— 不再「收到」+ 8 条「· bash: …」刷屏
     task.card_id = card_create(chat_id, build_progress_card(task)) or ""
-    log.info("task start open_id=%s card=%s cwd=%s", open_id, task.card_id, cwd)
+    log.info("task start open_id=%s card=%s cwd=%s effort=%s(%s)",
+             open_id, task.card_id, cwd, getattr(task, "effort_used", ""),
+             getattr(task, "effort_why", ""))
     threading.Thread(target=worker, args=(task,), daemon=True).start()
 
 
@@ -1960,15 +2063,16 @@ def handle_inner(data: P2ImMessageReceiveV1):
         m = re.match(r"^/(?:思考|effort)\s+(.+)$", text, re.S)
         if m:
             want = m.group(1).strip().lower()
-            alias = {"关": "off", "不思考": "off", "none": "off", "off": "off",
-                     "省": "low", "省着点": "low", "low": "low", "快": "low",
-                     "中": "high", "正常": "high", "high": "high",
-                     "高": "max", "最高": "max", "想到底": "max", "max": "max"}
+            alias = {"自动": "auto", "auto": "auto", "自动挡": "auto",
+                     "关": "off", "关闭": "off", "off": "off",
+                     "低": "low", "low": "low",
+                     "高": "high", "high": "high",
+                     "最高": "max", "max": "max"}
             want = alias.get(want, want)
             if want not in EFFORTS:
-                send(chat_id, "只有四档：%s" % " / ".join(EFFORTS))
+                send(chat_id, "reasoningEffort 只有 %s 这几档。" % " / ".join(EFFORTS))
                 return
-            send(chat_id, "试一下「%s」…" % EFFORT_ZH[want])
+            send(chat_id, "试一下 %s …" % want)
             ok, why = apply_choice(effort=want)
             if ok:
                 card_create(chat_id, effort_card())
@@ -2207,7 +2311,7 @@ def _do_switch(act, value, chat_id, message_id):
         else:
             if value not in EFFORTS:
                 if chat_id:
-                    send(chat_id, "只有四档：%s" % " / ".join(EFFORTS))
+                    send(chat_id, "reasoningEffort 只有 %s 这几档。" % " / ".join(EFFORTS))
                 return
             ok, why = apply_choice(effort=value)
             card = effort_card()
@@ -2307,6 +2411,11 @@ def main():
         ensure_ascii=False,
     ))
     fetch_bot_open_id()
+    # 启动时把「当前模型 × 四档」四份 overlay 铺好，之后每条任务只是挑一份用
+    try:
+        push_model_override()
+    except Exception:
+        log.exception("启动时写模型覆盖失败，先按 profile 默认跑")
     threading.Thread(target=report_loop, daemon=True).start()
 
     builder = lark.EventDispatcherHandler.builder("", "").register_p2_im_message_receive_v1(handle)

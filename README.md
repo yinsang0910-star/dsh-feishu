@@ -32,12 +32,12 @@
 | 清一下 `/home/agent/work/old` | 先弹一张审批卡，你点「批准」才执行 |
 | 我在高铁上，帮我看下服务器还活着吗 | 回你 CPU / 内存 / 磁盘 / 服务状态 |
 | 发一张试卷照片，说「帮我批改」 | 图**真的被打开看**（`read_image`），逐题对错给你 |
-| 换个最会想的模型，慢慢算 | `/模型 deepseek-v4-pro` + `/思考 想到底`，**先真跑一次**确认可用才生效 |
+| 换个最会想的模型，慢慢算 | `/模型` 点按钮换模型、`/思考` 换 `reasoningEffort`（含 `auto` 自动挡），**先真跑一次**确认可用才生效 |
 
 配套的机器人还管这些：白名单认领、每人一份独立会话记忆、任务队列、超时兜底、每日汇报、危险动作拦截；
 图片和文件消息也能收（[docs/BOT-ATTACHMENTS.md](docs/BOT-ATTACHMENTS.md)），
 群里**不用 @** 也能直接使唤（[docs/BOT-GROUP-MODE.md](docs/BOT-GROUP-MODE.md)）。
-发 `/help` 回一张能点的卡片：换模型、换思考强度、看状态、管项目、开关群里要不要 @
+发 `/help` 回一张能点的卡片：换模型、换 `reasoningEffort`（含 `auto` 自动挡）、看状态、管项目、开关群里要不要 @
 ——完整清单在 [docs/BOT-COMMANDS.md](docs/BOT-COMMANDS.md)。
 
 ## 为什么不是 `@larksuiteoapi/lark-mcp`

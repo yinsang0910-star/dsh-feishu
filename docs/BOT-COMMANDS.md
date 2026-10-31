@@ -5,8 +5,8 @@
 
 ## 一句话
 
-默认 `deepseek-v4.1-flash` + 正常思考强度；随时 `/模型` `/思考` 换，换之前会**真跑一次**验证，
-不认就自动退回原样，不会把机器人搞成哑巴。
+默认 `deepseek-v4.1-flash` + `reasoningEffort: auto`（每条任务按内容自动定档）；随时 `/模型` `/思考` 换，
+换之前会**真跑一次**验证，不认就自动退回原样，不会把机器人搞成哑巴。
 
 这是**全局设置**——机器人的「脑子」只有一份，谁换都是换同一份，换完所有人的下一个任务都用新的。
 想要每人一套，得在 `sess_key` 那层按人存模型，目前没做。
@@ -17,11 +17,11 @@
 
 | 指令 | 作用 |
 | --- | --- |
-| `/模型` | 回一张卡，5 个常用模型带一句人话说明，点按钮即换 |
-| `/模型 列表` | 29 个可用模型的全表：单价、上下文长度、能不能看图 |
-| `/模型 <名字>` | 直接换，例如 `/模型 deepseek-v4-pro`；名字不在清单里会拒绝并给相近建议 |
-| `/思考` | 回一张卡，四档按钮 |
-| `/思考 <档>` | `不思考 / 省着点 / 正常 / 想到底`（也认 `off/low/high/max`、`关/省/中/高`） |
+| `/模型` | 回一张卡，4 个常用模型带一句人话说明，点按钮即换 |
+| `/模型 列表` | 可用模型全表：单价、上下文长度、能不能看图（禁用的不列） |
+| `/模型 <名字>` | 直接换，例如 `/模型 deepseek-v4.1-flash`；名字不在清单里会拒绝并给相近建议 |
+| `/思考` | 回一张卡，五档按钮：`auto` / `off` / `low` / `high` / `max` |
+| `/思考 <档>` | 官方档位名，也认 `自动/auto`、`关/off`、`低/low`、`高/high`、`最高/max` |
 
 ### 看状态
 
@@ -69,30 +69,49 @@ overlay 只覆盖一个 entry：
   name: "@deepseek-ai/dsh-agent-default-model"
   config:
     provider: opencode-go
-    model: deepseek-v4-pro
-    reasoningEffort: max
+    model: deepseek-v4.1-flash
+    reasoningEffort: high
 ```
 
-机器人把这份 overlay 写在 agent 机的 `~/.cache/feishu/model-override.yml`（配置项
-`model_override_path`），每次起任务时拼进 `dsh_argv`。**不动 profile 的 `cordis.patch.yml`**
-——那份是所有调用共用的，改了会影响别的用途，也没法按人区分。
+机器人把 overlay 写在 agent 机的 `~/.cache/feishu/model-override-<档>.yml`（配置项
+`model_override_path` 是基准名，四档各一份），每次起任务时按这条任务实际用的档位挑一份拼进
+`dsh_argv`。**一档一份文件**是因为同时可能跑几条任务，共用一份会互相覆盖。
+
+**不动 profile 的 `cordis.patch.yml`**——那份是所有调用共用的，改了会影响别的用途，也没法按人区分。
 
 `--patch` 必须排在 `--json` 之前，否则被当成任务参数吞掉。
+
+## auto 自动挡
+
+`reasoningEffort: auto` 不是 DSH 的档位，是机器人自己加的：起任务时按这条任务的样子现挑一档。
+
+| 判据 | 落到的档 |
+| --- | --- |
+| 含「仔细 / 彻底 / 审查 / 重构 / 权衡 / 根因 / 批改 / 复盘」等词 | `max` |
+| 任务超过 1200 字 | `max` |
+| 任务 ≤ 15 字 | `low` |
+| 含「翻译 / 改成 / 查一下 / 回答」等词且 ≤ 60 字 | `low` |
+| 其余 | `high` |
+
+判定结果和理由会写在进度卡脚注上，例如 `reasoningEffort auto → max（提到「仔细」）`，
+不会黑箱。判据在 `bot.py` 的 `_DEEP_HINTS` / `_LIGHT_HINTS` / `decide_effort()` 里，改词表即可。
+`/思考 auto` 切换，`/思考 high` 之类切回固定档。
 
 ## 验证与退回
 
 换一次要做三件事，任何一步失败都退回原样：
 
 1. 写 `config.json`（`model` / `reasoning_effort`）
-2. 把 overlay 原子写到 agent 机（`cat > x.tmp` 再 `mv`）
+2. 把 overlay 原子写到 agent 机（`cat > x.tmp` 再 `mv`，四档一起写）
 3. **真跑一次**最短任务：`dsh-task --patch <overlay> --json '回答一个字：好'`
+   （选 `auto` 时用 `high` 那份当代表档验证模型本身可用）
 
 第 3 步认这些信号：
 
 | 信号 | 含义 | 处理 |
 | --- | --- | --- |
 | `"type":"final"` | 跑通了 | 保留 |
-| `UNSUPPORTED_REASONING_EFFORT` | 这个模型不吃这一档 | 退回，回你「这个模型不吃『X』这一档」 |
+| `UNSUPPORTED_REASONING_EFFORT` | 这个模型不支持这一档 | 退回，回你「这个模型不支持 reasoningEffort『X』」 |
 | `MISSING_CREDENTIAL` / `INVALID_CREDENTIAL` | 凭据用不了 | 退回 |
 | 其它 | 没出结果 | 退回，附最后一行输出 |
 
@@ -107,10 +126,14 @@ overlay 只覆盖一个 entry：
 | 模型 | off | minimal | low | medium | high | xhigh | max |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `deepseek-v4.1-flash` | ✗ | ✗ | ✓ | ✗ | ✓ | ✗ | ✓ |
-| `deepseek-v4-pro` | ✓ | ✗ | ✗ | ✗ | ✓ | ✗ | ✓ |
+| `deepseek-v4-pro`（已禁用） | ✓ | ✗ | ✗ | ✗ | ✓ | ✗ | ✓ |
 
-机器人只暴露四档（`off/low/high/max`），因为 `agent-default-model` 的 schema 只枚举这四个。
-其它模型没逐个测；选到不支持的组合时，第 3 步会拦住并告诉你哪一档不吃。
+`agent-default-model` 的 schema 只枚举 `off/low/high/max` 这四个，所以机器人只在这四档
+（外加自造的 `auto`）里选。其它模型没逐个测；选到不支持的组合时，第 3 步会拦住并告诉你哪一档不支持。
+
+**禁用的模型**：`bot.py` 里的 `BLOCKED_MODELS = ("deepseek-v4-pro",)`。它比 flash 贵一倍多、
+默认也用不上，留着容易被误点。`/模型 列表` 不列它，`/模型 deepseek-v4-pro` 会被直接拒绝。
+要放回来，把这一行改空即可。
 
 ## 模型清单从哪来
 
@@ -137,20 +160,20 @@ DSH 升级换了模型目录，机器人跟着变，不用改代码。
 # PVE
 python3 - <<'PY'
 import json; p='/opt/feishu-bot/config.json'
-c=json.load(open(p)); c['model']='deepseek-v4.1-flash'; c['reasoning_effort']='high'
+c=json.load(open(p)); c['model']='deepseek-v4.1-flash'; c['reasoning_effort']='auto'
 json.dump(c,open(p,'w'),ensure_ascii=False,indent=2)
 PY
 systemctl restart feishu-bot.service
 ```
 
-整份回滚：
+整份回滚（第二轮之前的版本）：
 
 ```bash
-cp -p /opt/feishu-bot/bot.py.bak-before-cmd-20261031-214530 /opt/feishu-bot/bot.py
+cp -p /opt/feishu-bot/bot.py.bak-before-effort-v2-20261031-2205 /opt/feishu-bot/bot.py
 systemctl restart feishu-bot.service
 ```
 
-agent 机上那份 overlay 留着不影响其它用途（只有机器人起任务时才带上它）；
-想彻底清掉就 `rm ~/.cache/feishu/model-override.yml`，并把 `config.json` 里的
+agent 机上那四份 overlay 留着不影响其它用途（只有机器人起任务时才带上它）；
+想彻底清掉就 `rm ~/.cache/feishu/model-override-*.yml`，并把 `config.json` 里的
 `model` / `reasoning_effort` 删掉——两个都没了，`dsh_argv` 就不再拼 `--patch`，
 回到 profile 自己的默认模型。
