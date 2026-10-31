@@ -8,7 +8,7 @@
 12 条决策的落点：
   ① 语义任务一律转 DSH；只有 /agent /pve /status 这类显式命令才直连执行
   ② 白名单：config.json → allowed_open_ids（空白名单 = 只广播 open_id，不执行）
-  ③ 群聊必须 @ 机器人才响应；私聊不需要
+  ③ 群聊默认不用 @ 也响应（group_require_mention=true 时恢复成必须 @）；私聊更不用
   ④ 每人一份独立 DSH 会话：state.json → sessions[open_id]
   ⑤ 三段进度：先「收到」→ 工具调用阶段进展 → 最终结果
   ⑥ 群聊与私聊都支持
@@ -18,11 +18,14 @@
   ⑩ 信息不足时在群里反问一个具体候选（DSH 首行 CLARIFY: …）
   ⑪ 30 分钟软上限：到点问「还在跑，要继续吗」，回「继续」再给 30 分钟
   ⑫ 结果超过 max_inline_lines 行（或 4000 字）就贴成文件发到群里
+  ⑬ 图片/文件消息：取回字节落到工作目录 .feishu-inbox，让 agent 自己用 read_image 看；
+     群里的图片消息带不了 @，所以先收着（15 分钟），等他 @ 一句再挂上去
 
 配置：/opt/feishu-bot/config.json   状态：/opt/feishu-bot/state.json
 账本：/opt/feishu-bot/ledger.jsonl（每任务一行，日报从这儿算）
 """
 
+import base64
 import collections
 import io
 import json
@@ -33,6 +36,7 @@ import shlex
 import subprocess
 import threading
 import time
+import urllib.error
 import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -76,6 +80,13 @@ DEFAULTS = {
     "report_hour": 8,
     "soft_timeout_sec": 1800,
     "max_inline_lines": 30,
+    # 附件（图片/文件）落点：相对工作目录。DSH 的文件沙箱默认 workspace-write，
+    # 只放行工作目录内的路径，所以附件必须落在 cwd 里，不能塞 /tmp 或 ~/.cache。
+    "attachment_dir": ".feishu-inbox",
+    "max_attachment_mb": 20,
+    # 群里要不要 @ 才响应：false = 群里直接说话就行（图片消息本来就带不了 @）。
+    # 随时可用 /要@ /免@ 切换，会写回 config.json。
+    "group_require_mention": False,
     "agent_host": "192.168.1.100",
     "agent_user": "agent",
     "agent_key": "/root/.ssh/agent_rsa",
@@ -103,6 +114,8 @@ INFO = """直接说要做什么就行，我会转给 agent 工作站上的 DSH�
 /项目    看看有哪些工作区，可以切过去
 /新      清空我这份记忆，从头开始（话题换了就用它）
 /额度    模型用量还剩多少
+
+群里不用 @：直接说话就行，发图也一样（/要@ 可改回必须 @）
 
 其余口语就能办：
 停 / 继续            中止或延长正在跑的任务
@@ -417,6 +430,168 @@ def deliver(chat_id, text, title="结果"):
     return False
 
 
+# ─────────────────────── 收附件（图片 / 文件） ───────────────────────
+#
+# 飞书消息里的图片/文件不在事件体里，只有一个 image_key / file_key，
+# 得再用 tenant_access_token 去 /im/v1/messages/{mid}/resources/{key} 取字节。
+# 取回来之后落进 agent 的工作目录（沙箱只认 cwd 内），最后把相对路径写进任务描述，
+# 让 agent 自己用 read_image / 读写工具去看——headless CLI 没有 --image 参数。
+
+ATTACH_TYPES = ("image", "file", "media", "audio")
+STASH_TTL = 900           # 群里先收着的图，10 分钟内 @ 一句还能挂上
+
+
+def _guess_ext(data: bytes) -> str:
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "png"
+    if data[:3] == b"\xff\xd8\xff":
+        return "jpg"
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return "gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "webp"
+    if data[:4] == b"%PDF":
+        return "pdf"
+    if data[:2] == b"PK":
+        return "zip"
+    return "bin"
+
+
+def fetch_resource(message_id, file_key, rtype, timeout=120):
+    """按 message_id + key 把附件取回字节流。rtype 只有 image / file 两种。"""
+    tok = _tenant_token()
+    if not tok:
+        return None, "取 tenant_access_token 失败（看 config.env 里的应用凭证）"
+    url = ("https://open.feishu.cn/open-apis/im/v1/messages/%s/resources/%s?type=%s"
+           % (message_id, file_key, rtype))
+    try:
+        req = urllib.request.Request(url, headers={"Authorization": "Bearer " + tok})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.read(), ""
+    except urllib.error.HTTPError as e:
+        detail = ""
+        try:
+            detail = e.read()[:300].decode("utf-8", "replace")
+        except Exception:
+            pass
+        return None, "HTTP %s %s" % (e.code, detail)
+    except Exception as e:
+        return None, str(e)
+
+
+def push_attachment(cwd, filename, data):
+    """把附件写到 agent 的工作目录里。字节以 base64 过 ssh，避免二进制走文本管道的坑。"""
+    sub = (CONF.get("attachment_dir") or ".feishu-inbox").strip("/")
+    target = "%s/%s" % (cwd.rstrip("/"), sub)
+    path = "%s/%s" % (target, filename)
+    cmd = ("mkdir -p %s && base64 -d > %s && stat -c '%%s' %s"
+           % (shlex.quote(target), shlex.quote(path), shlex.quote(path)))
+    code, out = run_remote(
+        CONF["agent_host"], CONF["agent_user"], CONF["agent_key"],
+        cmd, timeout=180, stdin_text=base64.b64encode(data).decode("ascii"),
+    )
+    if code != 0:
+        return "", "写不进工作站（exit=%d）：%s" % (code, out[:200])
+    log.info("附件已落到 %s（%s 字节）", path, out.strip())
+    return path, ""
+
+
+def parse_attachment(msg):
+    """把 image / file / media / audio 消息归一成同一份描述。"""
+    try:
+        content = json.loads(msg.content or "{}")
+    except Exception:
+        content = {}
+    mt = msg.message_type
+    if mt == "image":
+        key = content.get("image_key") or ""
+        if not key:
+            return None
+        return {"kind": "image", "rtype": "image", "key": key, "name": ""}
+    if mt in ("file", "media", "audio"):
+        key = content.get("file_key") or ""
+        if not key:
+            return None
+        name = (content.get("file_name") or "").strip() or (
+            "%s-%s" % (mt, datetime.now().strftime("%Y%m%d-%H%M%S")))
+        return {"kind": "file", "rtype": "file", "key": key, "name": name}
+    return None
+
+
+def stash_attachment(chat_id, open_id, msg, att):
+    """群里图片消息带不了 @，先按「人+会话」存着，等下一条 @ 的话挂上去。"""
+    with _LOCK:
+        st = STATE.setdefault("stashed", {})
+        now = time.time()
+        for k in [k for k, v in st.items() if now - (v.get("ts") or 0) > STASH_TTL]:
+            st.pop(k, None)
+        st["%s|%s" % (chat_id, open_id)] = {
+            "key": att["key"], "rtype": att["rtype"], "name": att.get("name") or "",
+            "mid": msg.message_id, "ts": now,
+        }
+        save_state()
+
+
+def take_stashed(chat_id, open_id):
+    with _LOCK:
+        st = STATE.get("stashed") or {}
+        item = st.pop("%s|%s" % (chat_id, open_id), None)
+        if not item:
+            return None
+        if time.time() - (item.get("ts") or 0) > STASH_TTL:
+            return None
+        save_state()
+        return item
+
+
+def materialize_attachment(chat_id, open_id, message_id, att, caption):
+    """取回附件 → 落到工作区 → 返回 (任务描述, 进度卡上给人看的一行)。
+    失败时已经回过用户，返回 (None, None)。"""
+    cwd = cur_cwd(open_id)
+    data, err = fetch_resource(message_id, att["key"], att["rtype"])
+    if data is None:
+        send(chat_id, "附件没取下来：%s" % err)
+        log.warning("取附件失败 mid=%s key=%s err=%s", message_id, att["key"], err)
+        return None, None
+
+    limit_mb = int(CONF.get("max_attachment_mb") or 20)
+    if len(data) > limit_mb * 1024 * 1024:
+        send(chat_id, "这个有 %d MB，超过 %d MB 上限，先没动它。"
+                      % (len(data) // (1024 * 1024), limit_mb))
+        return None, None
+    if not data:
+        send(chat_id, "附件是空的（0 字节），没什么可处理的。")
+        return None, None
+
+    name = att.get("name") or ""
+    if "." not in name.rsplit("/", 1)[-1]:
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        stem = name or ("img-%s" % stamp if att["kind"] == "image" else "file-%s" % stamp)
+        name = "%s.%s" % (stem, _guess_ext(data))
+    name = re.sub(r"[^\w.\-]+", "_", name)[-80:] or "attach.bin"
+
+    path, err = push_attachment(cwd, name, data)
+    if not path:
+        send(chat_id, "附件存到工作站失败：%s" % err)
+        return None, None
+
+    rel = path[len(cwd.rstrip("/")) + 1:] if path.startswith(cwd.rstrip("/") + "/") else path
+    kb = max(1, len(data) // 1024)
+    head = (caption or "").strip()
+    if att["kind"] == "image":
+        line = ("【用户发来一张图片，已存到工作目录】%s（相对 %s，%d KB）\n"
+                "先真的用 read_image 打开它看清内容，不要凭文件名或上下文猜。" % (rel, cwd, kb))
+        default_label = "看这张图"
+    else:
+        line = ("【用户发来一个文件，已存到工作目录】%s（相对 %s，%d KB）\n"
+                "先打开看一眼是什么，原件保留不要删。" % (rel, cwd, kb))
+        default_label = "看文件 %s" % name
+    if head:
+        return "%s\n他附言：%s" % (line, head), head
+    return (line + "\n他没写别的要求：先用两三句话说清你看到的是什么，再问他要怎么处理。",
+            default_label)
+
+
 # ─────────────────────────── agent 通道 ───────────────────────────
 
 def ssh_argv(host, user, key):
@@ -623,6 +798,9 @@ PROMPT_TMPL = (
     "  mcp__lark__docx_builtin_import     把本地文件导入成飞书云文档\n"
     "注意：MCP 没有上传文件的工具，要发本地文件一律用 pushfile；\n"
     "     也读不了群历史消息（应用没这个权限），别去试。\n\n"
+    "【图片与文件】他发来的图片/文件已经落到工作目录里（默认 .feishu-inbox/ 下），"
+    "消息里给的是相对路径。图片必须用 read_image 真的打开看（能看图，别凭文件名猜），"
+    "文件用读写工具打开；原件保留，不要删。\n"
     "用户消息：{text}"
 )
 
@@ -640,10 +818,12 @@ def sess_key(open_id, cwd):
 
 
 class Task(object):
-    def __init__(self, open_id, chat_id, text, session_id=None, approved=False, cwd=None):
+    def __init__(self, open_id, chat_id, text, session_id=None, approved=False, cwd=None,
+                 label=None):
         self.open_id = open_id
         self.chat_id = chat_id
         self.text = text
+        self.label = label or text   # 进度卡标题：给人看的一句，别把带路径的技术前缀糊上去
         self.session_id = session_id
         self.approved = approved
         self.cwd = cwd or cur_cwd(open_id)
@@ -683,13 +863,13 @@ def dsh_argv(task):
     # FEISHU_CHAT_ID 透给 agent 上的 pushfile —— agent 自己不知道要往哪个会话发文件。
     # 同时写一份兜底文件：万一 dsh 的 bash 工具没继承环境变量，pushfile 还能读到。
     cmd = (
-        "cd %s 2>/dev/null; "
+        "cd %s 2>/dev/null || cd %s; "
         "export PATH=\"$HOME/.local/bin:$PATH\"; "
         "export FEISHU_CHAT_ID=%s; "
         "mkdir -p ~/.cache/feishu 2>/dev/null && echo %s > ~/.cache/feishu/chat_id 2>/dev/null; "
         "exec %s --json"
         % (
-            task.cwd,
+            shlex.quote(task.cwd), shlex.quote(CONF["agent_root"]),
             shlex.quote(task.chat_id),
             shlex.quote(task.chat_id),
             CONF["dsh_cmd"],
@@ -761,7 +941,7 @@ def build_progress_card(task):
         rows.append(line)
     if not rows:
         rows.append("_正在想…_")
-    head = (task.text or "").replace("\n", " ")[:70]
+    head = (getattr(task, "label", None) or task.text or "").replace("\n", " ")[:70]
     return {
         "config": {"wide_screen_mode": True, "update_multi": True},
         "header": {
@@ -921,7 +1101,8 @@ def drain_queue(open_id):
         return
     nxt = q.popleft()
     log.info("队列继续 open_id=%s 剩 %d 个", open_id, len(q))
-    start_task(open_id, nxt["chat_id"], nxt["text"], nxt["cwd"], nxt.get("approved", False))
+    start_task(open_id, nxt["chat_id"], nxt["text"], nxt["cwd"], nxt.get("approved", False),
+               nxt.get("label"))
 
 
 def worker_body(task):
@@ -1040,17 +1221,17 @@ def watchdog(task):
             return
 
 
-def start_task(open_id, chat_id, text, cwd=None, approved=False):
+def start_task(open_id, chat_id, text, cwd=None, approved=False, label=None):
     cwd = cwd or cur_cwd(open_id)
     sid = STATE["sessions"].get(sess_key(open_id, cwd))
-    task = Task(open_id, chat_id, text, sid, approved, cwd)
+    task = Task(open_id, chat_id, text, sid, approved, cwd, label)
     # ⑤ 一条进度卡，原地刷新 —— 不再「收到」+ 8 条「· bash: …」刷屏
     task.card_id = card_create(chat_id, build_progress_card(task)) or ""
     log.info("task start open_id=%s card=%s cwd=%s", open_id, task.card_id, cwd)
     threading.Thread(target=worker, args=(task,), daemon=True).start()
 
 
-def pending_task(open_id, chat_id, text, session_id=None, approved=False):
+def pending_task(open_id, chat_id, text, session_id=None, approved=False, label=None):
     hit = is_dangerous(text)
     if hit and not approved:
         ask_approval(
@@ -1063,12 +1244,13 @@ def pending_task(open_id, chat_id, text, session_id=None, approved=False):
     busy = open_id in RUNNING
     if busy or q:
         # 一个人同时只跑一个，后面的排成先来先跑
-        q.append({"text": text, "chat_id": chat_id, "cwd": cwd, "approved": approved})
+        q.append({"text": text, "chat_id": chat_id, "cwd": cwd, "approved": approved,
+                  "label": label})
         ahead = len(q) + (1 if busy else 0)
         send(chat_id, "⏳ 前面还有 %d 个在跑，这个排上队了，完了自动接上。" % ahead)
         log.info("入队 open_id=%s pos=%d", open_id, ahead)
         return
-    start_task(open_id, chat_id, text, cwd, approved)
+    start_task(open_id, chat_id, text, cwd, approved, label)
 
 
 # ─────────────────────────── 额度 / 日报 ───────────────────────────
@@ -1244,19 +1426,44 @@ def handle_inner(data: P2ImMessageReceiveV1):
                 STATE["users"][sender] = {"first_seen": datetime.now().isoformat(timespec="seconds")}
             save_state()
 
-        if msg_type != "text":
-            send(chat_id, "目前只认文本消息（收到 %s）。" % msg_type)
+        att = None
+        if msg_type == "text":
+            text = (json.loads(msg.content).get("text") or "").strip()
+        elif msg_type in ATTACH_TYPES:
+            att = parse_attachment(msg)
+            text = ""
+            log.info("attachment type=%s name=%s", msg_type, (att or {}).get("name"))
+            if not att:
+                if chat_type not in ("group", "topic"):
+                    send(chat_id, "这条 %s 消息里没带附件 key，取不到东西。" % msg_type)
+                log.info("附件消息没带 key，忽略 type=%s", msg_type)
+                return
+        else:
+            # 群里免 @ 之后，别人发个表情包/合并转发不该收到任何提示
+            if chat_type not in ("group", "topic"):
+                send(chat_id, "这个我暂时接不住（%s）。发文字、图片、文件都行。" % msg_type)
+            log.info("不支持的 msg_type=%s，忽略", msg_type)
             return
 
-        text = (json.loads(msg.content).get("text") or "").strip()
         raw = text
         text = re.sub(r"@_user_\d+", "", text).strip()
         log.info("text=%r", text)
 
+        # 群里发图带不了 @：只有「必须 @」的模式才需要先收着等他 @ 一句；
+        # 免 @ 模式下图片直接处理（他补的那句话会落进同一个会话，上下文还在）
+        if (att and chat_type in ("group", "topic") and not mentioned_bot(msg)
+                and CONF.get("group_require_mention")):
+            if allowed(sender):
+                stash_attachment(chat_id, sender, msg, att)
+                send(chat_id, "📎 收到了：%s。15 分钟内 @我 说要拿它干什么，"
+                              "我就一起处理。" % ("图片" if att["kind"] == "image" else "文件"))
+                log.info("群里附件先收着 sender=%s kind=%s", sender, att["kind"])
+            return
+
         STATE["last_chat_id"] = chat_id
 
-        # ③ 群里必须 @ 我
-        if chat_type in ("group", "topic"):
+        # ③ 群里要不要 @：默认不要（group_require_mention=false → 直接说话就行）
+        if chat_type in ("group", "topic") and CONF.get("group_require_mention"):
             if not mentioned_bot(msg):
                 log.info("群消息没 @ 我，忽略")
                 return
@@ -1264,8 +1471,19 @@ def handle_inner(data: P2ImMessageReceiveV1):
                 log.info("群消息没有 @ 占位符，忽略")
                 return
 
+        # 上一条先收着的图/文件，挂到这句话上（群里发图 @ 不了我，只能事后 @ 一句）
+        if msg_type == "text" and not att and text and not text.startswith("/") and allowed(sender):
+            st = take_stashed(chat_id, sender)
+            if st:
+                att = {
+                    "kind": "image" if st["rtype"] == "image" else "file",
+                    "rtype": st["rtype"], "key": st["key"],
+                    "name": st.get("name") or "", "_mid": st.get("mid") or "",
+                }
+                log.info("挂上待处理附件 key=%s kind=%s", st["key"], att["kind"])
+
         # 还没 @ 出文字（只 @ 了一下）→ 给提示
-        if not text:
+        if not text and not att:
             send(chat_id, "在。直接说要做什么就行（看 /help）。")
             return
 
@@ -1287,7 +1505,7 @@ def handle_inner(data: P2ImMessageReceiveV1):
                 send(chat_id, "认领成功，你在白名单里了（白名单共 %d 人）。\n"
                               "现在直接说话我就转给 DSH。先试一句：/status" % len(wl))
                 if join_group(sender):
-                    send(chat_id, "顺手把你拉进「G2 指挥群」了，群里边 @我 更顺手。")
+                    send(chat_id, "顺手把你拉进「G2 指挥群」了，群里直接说话就行（要 @ 也行）。")
             return
 
         m = re.match(r"^/(allow|deny)\s+(\S+)$", text)
@@ -1314,6 +1532,10 @@ def handle_inner(data: P2ImMessageReceiveV1):
             return
 
         if not allowed(sender):
+            if chat_type in ("group", "topic"):
+                # 群里免 @ 之后，旁人的正常聊天不该收到任何提示
+                log.info("群里白名单外的 sender=%s，静默忽略", sender)
+                return
             wl = CONF.get("allowed_open_ids") or []
             if not wl:
                 send(
@@ -1330,6 +1552,16 @@ def handle_inner(data: P2ImMessageReceiveV1):
         if sender not in STATE["users"]:
             STATE["users"][sender] = {"first_seen": datetime.now().isoformat(timespec="seconds")}
             save_state()
+
+        # 附件：取回字节 → 落进工作目录 → 把路径写进任务描述（沙箱只认 cwd 内的文件）
+        label = None
+        if att:
+            text, label = materialize_attachment(
+                chat_id, sender, att.get("_mid") or msg.message_id, att, text
+            )
+            if text is None:
+                return
+            raw = text
 
         # 继续 / 停：先给正在跑的任务
         if text in ("继续", "/继续", "/continue"):
@@ -1385,8 +1617,29 @@ def handle_inner(data: P2ImMessageReceiveV1):
             send(chat_id, "好，以后日报里叫你 %s。" % who_name(sender))
             return
 
+        m = re.match(r"^/(mention|要@|免@)\s*(on|off|开|关)?$", text)
+        if m:
+            cur = bool(CONF.get("group_require_mention"))
+            val = (m.group(2) or "").strip().lower()
+            if val in ("on", "开"):
+                cur = True
+            elif val in ("off", "关"):
+                cur = False
+            else:
+                cur = not cur
+            CONF["group_require_mention"] = cur
+            save_conf()
+            if cur:
+                send(chat_id, "好，群里以后要 @ 我才干活。"
+                              "图片消息带不了 @，会先收着，等你 @ 一句再挂上去。")
+            else:
+                send(chat_id, "好，群里不用 @ 了，直接说话就行（发图也一样）。")
+            return
+
         if text in ("/status", "/状态"):
-            send(chat_id, task_brief(sender) + "\n\n" + do_status())
+            mode = "要 @ 才响应" if CONF.get("group_require_mention") else "不用 @ 也响应"
+            send(chat_id, task_brief(sender) + "\n群里：%s（/要@ /免@ 切换）\n\n" % mode
+                 + do_status())
             return
 
         if text in ("/ls", "/projects", "/项目"):
@@ -1503,7 +1756,7 @@ def handle_inner(data: P2ImMessageReceiveV1):
             return
 
         # ⑨⑩ 其余全部交给 DSH（群里也先给 DSH 一家）
-        pending_task(sender, chat_id, text)
+        pending_task(sender, chat_id, text, label=label)
 
     except Exception as e:
         log.exception("handle error")

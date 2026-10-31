@@ -25,8 +25,11 @@
 | 跑一下这个季度的文献综述，做完汇报 | 排进队列，**进度写在同一张卡片上**，聊天里只留一个气泡 |
 | 清一下 `/home/agent/work/old` | 先弹一张审批卡，你点「批准」才执行 |
 | 我在高铁上，帮我看下服务器还活着吗 | 回你 CPU / 内存 / 磁盘 / 服务状态 |
+| 发一张试卷照片，说「帮我批改」 | 图**真的被打开看**（`read_image`），逐题对错给你 |
 
-配套的机器人还管这些：白名单认领、每人一份独立会话记忆、任务队列、超时兜底、每日汇报、危险动作拦截。
+配套的机器人还管这些：白名单认领、每人一份独立会话记忆、任务队列、超时兜底、每日汇报、危险动作拦截；
+图片和文件消息也能收（[docs/BOT-ATTACHMENTS.md](docs/BOT-ATTACHMENTS.md)），
+群里**不用 @** 也能直接使唤（[docs/BOT-GROUP-MODE.md](docs/BOT-GROUP-MODE.md)）。
 
 ## 为什么不是 `@larksuiteoapi/lark-mcp`
 
@@ -222,7 +225,9 @@ docs/             TOOL-CONTRACT · ARCHITECTURE · DEPLOY · GATEWAY · BOT-INTE
 | [DEPLOY.md](docs/DEPLOY.md) | 部署到服务器 |
 | [GATEWAY.md](docs/GATEWAY.md) | 网关协议与部署 |
 | [BOT-INTEGRATION.md](docs/BOT-INTEGRATION.md) | 机器人与网关怎么对接 |
-| [AGENT-WORKSPACE.md](docs/AGENT-WORKSPACE.md) | 工作区归档规则 |
+| [BOT-ATTACHMENTS.md](docs/BOT-ATTACHMENTS.md) | 机器人怎么收图片/文件（`read_image` 真看图） |
+| [BOT-GROUP-MODE.md](docs/BOT-GROUP-MODE.md) | 群聊不用 @ 也能用（`/要@` `/免@`） |
+| [AGENT-WORKSPACE.md](docs/AGENT-WORKSPACE.md) | 工作区归档规则 + headless 记忆插件 |
 
 ## License
 

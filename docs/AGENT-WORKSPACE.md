@@ -105,3 +105,40 @@ agent-work-gc -r L1,L2,L3  # ！连 node_modules 一起删，需要重新 instal
 4. **`/状态` 里列最近交付物** —— 依赖第 3 条落地。
 
 第 1 条建议等有明确的新项目要开工时顺手做，别为重构而重构。
+
+## 记忆插件：headless profile 也得装（2026-10-31）
+
+飞书机器人调的是 `dsh-task`，它落在 **headless profile**；而 headless 原来只挂了
+`@deepseek-ai/dsh-base` + `@deepseek-ai/dsh-headless` 两个 bundle，**没有 dsh-mnemon**，
+所以机器人在飞书里「什么都不记得」——`~/.mnemon/runtime/{MEMORY.md,USER.md}` 从来没进过上下文。
+桌面/网页 profile 装过记忆插件，跟 headless 是两套装配。
+
+修法（一条命令，pnpm 会同时写 `dependencies` 和 `dsh.profile.bundles`，不用手改 JSON）：
+
+```bash
+ssh agent
+cp -p ~/.dsh/profiles/headless/package.json{,.bak-before-mnemon-$(date +%Y%m%d-%H%M%S)}
+dsh plugin --profile headless add dsh-mnemon      # 版本对齐 web：dsh-mnemon@^0.5.37
+dsh --profile headless --dump-config | grep -i mnemon   # 应看到 mnemon / mnemon-* 一连串 entry
+```
+
+验证（两句独立 session，答案都该是记忆里的名字，不是从会话历史猜的）：
+
+```bash
+cd /home/agent/work && dsh-task --json "你还记得我叫什么名字？只回答名字"
+```
+
+`mnemon` 不做 profile 级存储隔离，所以 headless 装好后与 web **共用同一份**
+`~/.mnemon`（runtime/MEMORY.md 6946B、USER.md 2639B）。注意它启动时会 flush 一次
+runtime 文件，mtime 变、大小不变，属正常。
+
+别做的事：不要把 `~/.dsh/profiles/web/node_modules/.../dsh-mnemon/cordis.patch.yml`
+里的 `insert` 块抄进 profile 的 patch —— entry id 会重复，Settings 存不住（上游 issue #470）。
+
+回滚：
+
+```bash
+cp -p ~/.dsh/profiles/headless/package.json.bak-before-mnemon-<时间戳> \
+      ~/.dsh/profiles/headless/package.json
+```
+

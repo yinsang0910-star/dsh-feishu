@@ -16,7 +16,7 @@
 `DEFAULTS` 里加一条：
 
 ```python
-    "gateway_url": "http://192.168.1.20:18642",
+    "gateway_url": "http://192.168.1.205:18642",
 ```
 
 同时写进了 `/opt/feishu-bot/config.json`，便于不改代码就调整。
@@ -103,12 +103,14 @@ MCP 侧：
 
 日志里那 4 次 `accepted=false` 是用户连点导致的 —— 幂等保护正确拒绝了重复投递，但也说明当时缺「点击反馈」，所以补了 `mark_ask_answered`。
 
+> 收图片/文件那次改造（2026-10-31）单独记在 [BOT-ATTACHMENTS.md](BOT-ATTACHMENTS.md)。
+
 ## 部署位置速查
 
 | 组件 | 位置 | 托管方式 |
 |---|---|---|
-| bot.py | PVE `192.168.1.10:/opt/feishu-bot/bot.py` | `systemctl status feishu-bot` |
-| gateway | agent `192.168.1.20:~/dsh-feishu-gateway/gateway.mjs` | `systemctl --user status dsh-feishu-gateway`（Linger 已开） |
+| bot.py | PVE `192.168.1.200:/opt/feishu-bot/bot.py` | `systemctl status feishu-bot` |
+| gateway | agent `192.168.1.205:~/dsh-feishu-gateway/gateway.mjs` | `systemctl --user status dsh-feishu-gateway`（Linger 已开） |
 | gateway 依赖 | agent `~/dsh-feishu-gateway/node_modules`（`@larksuiteoapi/node-sdk`） | npm |
 | MCP bundle | agent `~/.local/bin/dsh-feishu-mcp.mjs` + wrapper `dsh-feishu-mcp` | DSH 按需拉起 |
 | 密钥 | agent `~/.config/dsh/feishu.env`（0600） | systemd EnvironmentFile |
