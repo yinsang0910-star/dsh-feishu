@@ -103,15 +103,18 @@ $readme = @"
 真源码、长连接机器人、卡片网关、四步安装向导都在那边。这个仓库是打包产物，
 由主仓库的 ``scripts/publish-mcp-repo.ps1`` 单向同步生成，**请勿直接在此提交代码**。
 
-## 跑
+## 装
 
-单文件自包含（SDK 和 core 都打进去了，不需要装依赖）：
+**Claude Desktop**：从 [Releases](https://github.com/yinsang0910-star/dsh-feishu-mcp/releases) 下载
+``dsh-feishu-mcp.mcpb``，双击安装，在配置面板填 App ID 与 App Secret。
+
+**其他 stdio 客户端**（Cursor / Cline / DSH / 自己写的）：
 
 ``````bash
 npx github:yinsang0910-star/dsh-feishu-mcp
 ``````
 
-需要两个环境变量：
+单文件自包含（SDK 和 core 都打进去了，不需要装依赖）。需要两个环境变量：
 
 ``````bash
 export FEISHU_APP_ID=cli_xxxxxxxx
@@ -169,6 +172,8 @@ node_modules/
 *.map
 *.log
 .DS_Store
+# .mcpb 是给 Claude Desktop 装的二进制产物，走 GitHub Release，不进 git
+*.mcpb
 "@ | Set-Content (Join-Path $out '.gitignore') -Encoding utf8 -NoNewline
 
 # 必须有：Windows 上 git 默认 autocrlf 会把 .mjs 转成 CRLF，
@@ -184,6 +189,89 @@ Write-Host "✓ 已生成 $out" -ForegroundColor Green
 Get-ChildItem $out -Recurse -File | ForEach-Object {
     "  {0,-26} {1,8:N1} KB" -f $_.FullName.Replace($out, '').TrimStart('\'), ($_.Length / 1KB)
 }
+
+# ── 8. 生成 .mcpb（MCP Bundle，Claude Desktop 双击即装的格式，smithery 也收）──
+# 结构：manifest.json + icon.png + server/index.mjs，zip 后改扩展名，不能有外层目录。
+Write-Host '→ 生成 .mcpb...' -ForegroundColor Cyan
+$stage = Join-Path $root '.publish\mcpb-stage'
+if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
+New-Item -ItemType Directory -Force -Path (Join-Path $stage 'server') | Out-Null
+Copy-Item $bundlePath (Join-Path $stage 'server\index.mjs') -Force
+$iconSrc = Join-Path $root 'docs\assets\icon-180.png'
+if (Test-Path $iconSrc) { Copy-Item $iconSrc (Join-Path $stage 'icon.png') -Force }
+
+$manifest = [ordered]@{
+    manifest_version = '0.3'
+    name             = 'dsh-feishu'
+    display_name     = '飞书 / Lark'
+    version          = $srcPkg.version
+    description      = '25 个工具的飞书 MCP server：把本地文件真的发进会话、读会话上下文、发进度卡、停下来等人拍板。不需要公网 IP。'
+    long_description = @'
+把飞书变成一个可以操作的工作界面，而不是又一个通知渠道。
+
+- **发文件**：`feishu_send_file` 把本地文件真的传进会话（不是给个路径），支持批量与说明文字
+- **读上下文**：`feishu_recent` 拉最近的对话，agent 知道自己不在场时群里说了什么
+- **等人拍板**：`feishu_ask` 会阻塞到有人点卡片按钮或打字回复为止
+- **进度卡**：`feishu_update_card` 让同一张卡片原地刷新，不是刷屏
+- **云内容**：多维表格增删改查、云文档读写、知识库浏览
+'@
+    author           = [ordered]@{
+        name = 'yinsang0910-star'
+        url  = 'https://github.com/yinsang0910-star'
+    }
+    repository       = [ordered]@{ type = 'git'; url = "git+$repoUrl.git" }
+    homepage         = 'https://github.com/yinsang0910-star/dsh-feishu#readme'
+    support          = 'https://github.com/yinsang0910-star/dsh-feishu/issues'
+    license          = 'MIT'
+    keywords         = @('feishu', 'lark', 'messaging', 'file-transfer', 'bitable')
+    server           = [ordered]@{
+        type        = 'node'
+        entry_point = 'server/index.mjs'
+        mcp_config  = [ordered]@{
+            command = 'node'
+            args    = @('${__dirname}/server/index.mjs')
+            env     = [ordered]@{
+                FEISHU_APP_ID           = '${user_config.app_id}'
+                FEISHU_APP_SECRET       = '${user_config.app_secret}'
+                FEISHU_DEFAULT_CHAT_ID  = '${user_config.default_chat_id}'
+            }
+        }
+    }
+    compatibility    = [ordered]@{
+        platforms = @('darwin', 'win32', 'linux')
+        runtimes  = [ordered]@{ node = '>=20.0.0' }
+    }
+    user_config      = [ordered]@{
+        app_id           = [ordered]@{
+            type        = 'string'
+            title       = 'App ID'
+            description = '飞书自建应用的 App ID（cli_ 开头）。在开放平台「凭证与基础信息」里'
+            required    = $true
+        }
+        app_secret       = [ordered]@{
+            type        = 'string'
+            title       = 'App Secret'
+            description = '飞书自建应用的 App Secret。只存在本机，不会上传'
+            sensitive   = $true
+            required    = $true
+        }
+        default_chat_id  = [ordered]@{
+            type        = 'string'
+            title       = '默认会话 ID'
+            description = '可选。不填时每次调用都要显式传 chat_id（oc_ 开头）'
+            required    = $false
+        }
+    }
+}
+($manifest | ConvertTo-Json -Depth 12) + "`n" | Set-Content (Join-Path $stage 'manifest.json') -Encoding utf8 -NoNewline
+
+$mcpbPath = Join-Path $out 'dsh-feishu-mcp.mcpb'
+if (Test-Path $mcpbPath) { Remove-Item $mcpbPath -Force }
+# 用 .NET 的 ZipFile 而不是 Compress-Archive：后者会写外层目录、还会把 \ 写成 / 之外的问题
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+[IO.Compression.ZipFile]::CreateFromDirectory($stage, $mcpbPath, [IO.Compression.CompressionLevel]::Optimal, $false)
+"  dsh-feishu-mcp.mcpb  {0:N2} MB" -f ((Get-Item $mcpbPath).Length / 1MB) | Write-Host
+Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
 
 # ── 7. 提交推送 ────────────────────────────────────────────────────────────
 if (-not $Push) {

@@ -97,7 +97,12 @@ echo '你有哪些 mcp__feishu__ 工具？只列名字' | dsh --profile headless
 <details>
 <summary>只想挂 MCP，不要机器人</summary>
 
-MCP server 已打成**自包含单文件**（SDK 和 core 都打进去了），不用 `pnpm install`，也不从 npm 装：
+MCP server 已打成**自包含单文件**（SDK 和 core 都打进去了），不用 `pnpm install`，也不从 npm 装。
+
+**Claude Desktop**：从 [Releases](https://github.com/yinsang0910-star/dsh-feishu-mcp/releases) 下载
+`dsh-feishu-mcp.mcpb`，双击安装，在配置面板填 App ID 与 App Secret。
+
+**其他 stdio 客户端**：
 
 ```bash
 npx github:yinsang0910-star/dsh-feishu-mcp
