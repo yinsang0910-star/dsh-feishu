@@ -33,7 +33,9 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: 类型检查（4 个包）
-        run: pnpm -r typecheck
+        # mcp / gateway 从 @yisang0910/core 的 dist/*.d.ts 取类型，所以根脚本
+        # typecheck 会先 build:core 再 pnpm -r typecheck（干净 checkout 也能过）。
+        run: pnpm typecheck
 
       - name: 构建
         run: pnpm build
