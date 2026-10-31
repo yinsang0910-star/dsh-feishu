@@ -18,8 +18,8 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { askCard, FeishuApiError } from '@dsh-feishu/core';
-import type { FeishuMessage, FeishuUser } from '@dsh-feishu/core';
+import { askCard, FeishuApiError } from '@dshfeishu/core';
+import type { FeishuMessage, FeishuUser } from '@dshfeishu/core';
 import { ok, fail, type ToolContext } from './types.js';
 import {
   gatewayHealth,

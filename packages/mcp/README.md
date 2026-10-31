@@ -1,4 +1,4 @@
-# @dsh-feishu/mcp
+# @dshfeishu/mcp
 
 把飞书接进 agent 的 MCP server（stdio，25 个工具）。
 

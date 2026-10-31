@@ -423,13 +423,13 @@ client 侧（浏览器 Cordis 树）常用：`slots` / `uiRenderer`（`NM\dsh-cl
 
 ```powershell
 # 1) 把包挂进 profile 的 node_modules（和 dsh-purge 一样的手法：现网就是 junction）
-cmd /c mklink /J "C:\Users\<你>\.dsh\profiles\desktop\node_modules\@dsh-feishu\dsh-plugin" "D:\dsh-feishu\packages\dsh-plugin"
+cmd /c mklink /J "C:\Users\<你>\.dsh\profiles\desktop\node_modules\@dshfeishu\dsh-plugin" "D:\dsh-feishu\packages\dsh-plugin"
 
 # 2) 在 profile 的 patch 层加一行 insert（不改 cordis.yml，那文件是空的 entry 列表）
 #    编辑 C:\Users\<你>\.dsh\profiles\desktop\cordis.patch.yml，追加：
 #      - insert:
 #          - id: dsh-plugin-skeleton
-#            name: '@dsh-feishu/dsh-plugin'
+#            name: '@dshfeishu/plugin'
 #            config:
 #              endpointPath: /dsh-plugin-skeleton/api
 ```
@@ -439,8 +439,8 @@ cmd /c mklink /J "C:\Users\<你>\.dsh\profiles\desktop\node_modules\@dsh-feishu\
 `profiles\desktop\package.json` 里两处都要加：
 
 ```jsonc
-"dependencies": { …, "@dsh-feishu/dsh-plugin": "link:D:/dsh-feishu/packages/dsh-plugin" },
-"dsh": { "profile": { "bundles": [ …, "@dsh-feishu/dsh-plugin" ] } }
+"dependencies": { …, "@dshfeishu/plugin": "link:D:/dsh-feishu/packages/dsh-plugin" },
+"dsh": { "profile": { "bundles": [ …, "@dshfeishu/plugin" ] } }
 ```
 
 bundle 列表里加了之后，launcher 才会读它的 `dsh.bundle.patch`（依据 `APPBOOT:463-489` 的 profile 组合说明：
@@ -490,7 +490,7 @@ node .tmp\dsh-plugin-manifest-check.mjs   # 14/14，清单 + patch 结构
 4. **`dsh.engines.dsh` 的消费点**：在 `APPBOOT` 里没找到读取处（版本闸只看 `peerDependencies`），**未验证**它到底被谁用。
 5. **`dshTarget` 字段**：在 `APPBOOT` / `dsh-host-plugin-inventory` 里 grep 不到读取点，判为包自定义字段（**未验证**是否还有别处读）。
 6. **手工注册 Cordis Remote**（不用 typert 代码生成）：**未找到入口**，所以本骨架走 HTTP 路由。
-7. **`/plugins` 路由下 scoped 包名的 URL**（`@dsh-feishu/dsh-plugin`）：官方 scoped 插件（`@linxin666/...`）能工作，
+7. **`/plugins` 路由下 scoped 包名的 URL**（`@dshfeishu/plugin`）：官方 scoped 插件（`@linxin666/...`）能工作，
    说明 client-modules 处理了 scope，但我没直接观察它生成的那个 URL。
 
 ---
@@ -544,7 +544,7 @@ node .tmp\dsh-plugin-manifest-check.mjs   # 14/14，清单 + patch 结构
 | `client.js` | 599 | 浏览器半侧：手写 CJS factory，注册 `settings.section` 的「飞书连接」页 |
 | `cordis.patch.yml` | 23 | bundle patch：entry id `dsh-feishu-settings`，`config.endpointPath=/dsh-feishu/api` |
 | `package.json` | 36 | 清单；**零 dependencies**、零 `@deepseek-ai/dsh*` peer（仍避开 §1.4 的版本闸） |
-| `dist/index.js` | 875（生成） | `pnpm --filter @dsh-feishu/dsh-plugin build` 产物。`dist/` 在 `.gitignore` 里，新 clone 必须先 build |
+| `dist/index.js` | 875（生成） | `pnpm --filter @dshfeishu/plugin build` 产物。`dist/` 在 `.gitignore` 里，新 clone 必须先 build |
 
 ### 8.2 三个 op 的行为
 
@@ -579,7 +579,7 @@ node .tmp\dsh-plugin-manifest-check.mjs   # 14/14，清单 + patch 结构
 
 | 项 | 结果 |
 |---|---|
-| `pnpm --filter @dsh-feishu/dsh-plugin typecheck` | ✅ 0 错误 |
+| `pnpm --filter @dshfeishu/plugin typecheck` | ✅ 0 错误 |
 | `build` + `node --check dist/index.js` + `node --check client.js` | ✅ |
 | 后端离线测试（假 ctx + 真 `node:http` + mock fetch + 临时目录） | ✅ **76/76** |
 | 前端离线冒烟（最小 hooks 渲染器真跑 `factory` 并驱动点击） | ✅ **54/54** |
@@ -598,7 +598,7 @@ secret 不进日志也不进响应、`.tmp` 无残留、`[]` 占位被替换而�
 
 ```powershell
 # 1) junction：包必须在 profile 的 node_modules 下，Loader 才 import 得到
-cmd /c mklink /J "C:\Users\<你>\.dsh\profiles\<profile>\node_modules\@dsh-feishu\dsh-plugin" "D:\dsh-feishu\packages\dsh-plugin"
+cmd /c mklink /J "C:\Users\<你>\.dsh\profiles\<profile>\node_modules\@dshfeishu\dsh-plugin" "D:\dsh-feishu\packages\dsh-plugin"
 ```
 
 ```yaml
@@ -606,7 +606,7 @@ cmd /c mklink /J "C:\Users\<你>\.dsh\profiles\<profile>\node_modules\@dsh-feish
 #    （文件里如果是 `[]` 占位，要先把它删掉，否则插进去不是合法数组项）
 - insert:
     - id: dsh-feishu-settings
-      name: '@dsh-feishu/dsh-plugin'
+      name: '@dshfeishu/plugin'
       config:
         endpointPath: /dsh-feishu/api
         profile: <profile>        # 可选：自动探测不准时写死

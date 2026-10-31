@@ -75,7 +75,7 @@ if (Test-Path $licenseSrc) {
 
 # ── 4. README（独立仓库要有自己的安装说明，不能直接搬 39KB 的开发笔记）──────
 $readme = @"
-# @dsh-feishu/dsh-plugin
+# @dshfeishu/plugin
 
 DeepSeek Harness 设置面板里的「飞书连接」页：四步向导，把飞书接进 DSH。
 
@@ -144,7 +144,7 @@ try {
         Write-Host '没有变化，跳过提交。'
         return
     }
-    $msg = if ($Message) { $Message } else { "sync: 从主仓库同步 @dsh-feishu/dsh-plugin $(Get-Date -Format 'yyyy-MM-dd HH:mm')" }
+    $msg = if ($Message) { $Message } else { "sync: 从主仓库同步 @dshfeishu/plugin $(Get-Date -Format 'yyyy-MM-dd HH:mm')" }
     git -c user.name='yinsang0910-star' -c user.email='1446512943@qq.com' commit -q -m $msg
     git push -u origin main 2>&1 | Select-Object -Last 3
     Write-Host '✓ 已推送' -ForegroundColor Green

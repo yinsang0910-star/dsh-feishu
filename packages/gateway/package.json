@@ -1,5 +1,5 @@
 {
-  "name": "@dsh-feishu/gateway",
+  "name": "@dshfeishu/gateway",
   "publishConfig": {
     "access": "public"
   },
@@ -25,7 +25,7 @@
     "dev": "tsx src/index.ts"
   },
   "dependencies": {
-    "@dsh-feishu/core": "workspace:*",
+    "@dshfeishu/core": "workspace:*",
     "@larksuiteoapi/node-sdk": "^1.76.0"
   }
 }

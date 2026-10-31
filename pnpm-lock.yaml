@@ -39,7 +39,7 @@ importers:
 
   packages/gateway:
     dependencies:
-      '@dsh-feishu/core':
+      '@dshfeishu/core':
         specifier: workspace:*
         version: link:../core
       '@larksuiteoapi/node-sdk':
@@ -48,7 +48,7 @@ importers:
 
   packages/mcp:
     dependencies:
-      '@dsh-feishu/core':
+      '@dshfeishu/core':
         specifier: workspace:*
         version: link:../core
       '@modelcontextprotocol/sdk':

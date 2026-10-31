@@ -1,5 +1,5 @@
 {
-  "name": "@dsh-feishu/dsh-plugin",
+  "name": "@dshfeishu/plugin",
   "publishConfig": {
     "access": "public"
   },

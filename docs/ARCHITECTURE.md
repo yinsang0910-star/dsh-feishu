@@ -45,13 +45,13 @@
                 │ HTTPS（Node 内置 fetch）
                 ▼
 ┌──────────────────────────────┐
-│ @dsh-feishu/core             │  FeishuClient（请求 / token 缓存 / 重试 / 上传下载）
+│ @dshfeishu/core             │  FeishuClient（请求 / token 缓存 / 重试 / 上传下载）
 │                              │  types.ts（数据契约）+ cards.ts（卡片模板）
 └───────────────┬──────────────┘
                 │ 方法调用（sendText / sendFile / listMessages / listMembers ...）
                 ▼
 ┌──────────────────────────────┐
-│ @dsh-feishu/mcp  server.ts   │  13 个工具；参数校验、错误翻译、结果拍平
+│ @dshfeishu/mcp  server.ts   │  13 个工具；参数校验、错误翻译、结果拍平
 │                              │  tools/{base,messages,files,context,directory}.ts
 └───────────────┬──────────────┘
                 │ stdio 上的 JSON-RPC（**stdout 专供协议**，日志走 stderr）
@@ -81,7 +81,7 @@
 
 ## 三、两个包的职责边界
 
-### `@dsh-feishu/core` —— 只关心"飞书怎么调"
+### `@dshfeishu/core` —— 只关心"飞书怎么调"
 
 - **`client.ts`：`FeishuClient`**
   - 只用 Node 内置 `fetch` / `FormData` / `Blob`，不引任何 HTTP 库；
@@ -98,7 +98,7 @@
 
 core **不认识** MCP：它不知道工具、`ok/fail`、JSON-RPC 的存在。这样 CLI 脚本、测试、将来的插件都能直接复用同一个客户端。
 
-### `@dsh-feishu/mcp` —— 只关心"模型怎么用"
+### `@dshfeishu/mcp` —— 只关心"模型怎么用"
 
 - **`server.ts`**：从环境变量读配置 → 建 client → 建 `McpServer` → 注册工具 → 挂 `StdioServerTransport`。启动失败的日志写 stderr 后 `process.exit(2)`，绝不污染 stdout。
 - **`tools/types.ts`**：`ToolContext`（client + config + log）和 `ok()/fail()`——所有返回都必须过这两个函数。
@@ -110,7 +110,7 @@ core **不认识** MCP：它不知道工具、`ok/fail`、JSON-RPC 的存在。�
   - `directory.ts` 会话与成员（`feishu_chats` / `feishu_members`）。
 - 这一层做三件事：**参数校验**（zod raw shape + 越界钳制）、**错误翻译**（`FeishuApiError` → 中文可执行提示）、**结果拍平**（飞书 JSON → 模型好读的文本 + `structuredContent`）。
 
-依赖方向是单向的：`mcp → core`。core 不反向依赖，任何时候都能单独 `pnpm --filter @dsh-feishu/core build`。
+依赖方向是单向的：`mcp → core`。core 不反向依赖，任何时候都能单独 `pnpm --filter @dshfeishu/core build`。
 
 ---
 

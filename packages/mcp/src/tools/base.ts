@@ -5,7 +5,7 @@
 
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { infoCard, FeishuApiError } from '@dsh-feishu/core';
+import { infoCard, FeishuApiError } from '@dshfeishu/core';
 import { ok, fail, type ToolContext } from './types.js';
 
 export function registerBaseTools(server: McpServer, ctx: ToolContext): void {

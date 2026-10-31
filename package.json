@@ -15,7 +15,7 @@
     "test": "pnpm -r test",
     "smoke": "node scripts/smoke.mjs",
     "smoke:write": "node scripts/smoke.mjs --write",
-    "dev": "pnpm --filter @dsh-feishu/mcp dev"
+    "dev": "pnpm --filter @dshfeishu/mcp dev"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",

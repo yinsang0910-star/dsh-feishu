@@ -17,7 +17,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { FeishuApiError } from '@dsh-feishu/core';
+import { FeishuApiError } from '@dshfeishu/core';
 import { ok, fail, type ToolContext } from './types.js';
 
 // ───────────────────────── 平台边界常量 ─────────────────────────

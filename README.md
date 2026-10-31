@@ -170,10 +170,10 @@ scope 没开时 `FeishuApiError.missingScopes` 会把该开哪几项直接拼进
 
 ```
 packages/
-├── core/          @dsh-feishu/core      API 客户端 · 类型 · 卡片模板（零第三方 HTTP 依赖）
-├── mcp/           @dsh-feishu/mcp       25 个工具的 MCP server
-├── gateway/       @dsh-feishu/gateway   卡片问答网关（HTTP + 可选长连接）
-└── dsh-plugin/    @dsh-feishu/dsh-plugin DSH 设置页（在 Web UI 里填凭据、测连接）
+├── core/          @dshfeishu/core      API 客户端 · 类型 · 卡片模板（零第三方 HTTP 依赖）
+├── mcp/           @dshfeishu/mcp       25 个工具的 MCP server
+├── gateway/       @dshfeishu/gateway   卡片问答网关（HTTP + 可选长连接）
+└── dsh-plugin/    @dshfeishu/plugin DSH 设置页（在 Web UI 里填凭据、测连接）
 services/
 ├── feishu-bot/    飞书长连接机器人 + 一键部署脚本
 └── agent-workspace/  工作区清理器（按「能否一条命令重建」分级清理）

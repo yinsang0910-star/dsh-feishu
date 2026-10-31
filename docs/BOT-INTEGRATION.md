@@ -68,7 +68,7 @@ def gateway_post(path, body, timeout=3):
 ## 为什么卡片按钮的字段名不一样
 
 - 审批卡（本仓库旧代码）：`{act: "approve", tok: "1234"}`
-- 提问卡（`@dsh-feishu/core` 的 `askCard`）：`{act: "answer", token: "a1b2c3d4", answer: "确认发车"}`
+- 提问卡（`@dshfeishu/core` 的 `askCard`）：`{act: "answer", token: "a1b2c3d4", answer: "确认发车"}`
 
 两者不通用，`on_card_action` 里得分别读。合并成一种会更干净，但会牵动审批流程，没在这次动。
 
