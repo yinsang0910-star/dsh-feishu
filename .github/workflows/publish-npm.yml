@@ -1,0 +1,73 @@
+name: Publish to npm
+
+# 为什么要走这条路而不是本地 `npm publish`：
+# npm 从 2026-07-31 起，bypass-2FA 的 granular token 被禁止做任何账号级操作
+# （建 token、改包权限、配 trusted publishing 都要交互式 2FA）；
+# 2027-01 起连直接发布也要收走，只剩「读私有包 + 提交到暂存区」。
+# 官方给的替代就是 trusted publishing（OIDC）：
+# 在 npm 上把本仓库 + 本 workflow 文件名登记为 trusted publisher，
+# 之后 CI 用 GitHub 的 OIDC 令牌证明身份，不再需要任何长期凭据。
+
+on:
+  workflow_dispatch:
+    inputs:
+      packages:
+        description: '要发布的包（空格分隔；留空=全部四个）'
+        required: false
+        default: ''
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # trusted publishing 必需：让 npm 验证这个 workflow 的身份
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          # 注意：配了 registry-url 才会写 .npmrc，trusted publishing 靠它找对 registry
+          registry-url: https://registry.npmjs.org
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm -r --filter "./packages/*" run build
+
+      - name: Test
+        run: |
+          pnpm --filter @yisang0910/core test
+          pnpm --filter @yisang0910/gateway test
+
+      # 依赖顺序不能反：mcp 和 gateway 都依赖 core（workspace:*），
+      # core 不在 registry 上时它们装不上。
+      - name: Publish core
+        if: ${{ github.event.inputs.packages == '' || contains(github.event.inputs.packages, 'core') }}
+        run: pnpm --filter @yisang0910/core publish --no-git-checks --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish mcp
+        if: ${{ github.event.inputs.packages == '' || contains(github.event.inputs.packages, 'mcp') }}
+        run: pnpm --filter @yisang0910/mcp publish --no-git-checks --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish gateway
+        if: ${{ github.event.inputs.packages == '' || contains(github.event.inputs.packages, 'gateway') }}
+        run: pnpm --filter @yisang0910/gateway publish --no-git-checks --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish plugin
+        if: ${{ github.event.inputs.packages == '' || contains(github.event.inputs.packages, 'plugin') }}
+        run: pnpm --filter @yisang0910/plugin publish --no-git-checks --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

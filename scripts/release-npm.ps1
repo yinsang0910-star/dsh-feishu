@@ -9,9 +9,16 @@
          只能走网页 https://www.npmjs.com/org/create —— 那需要登录态，无法自动化。
          所以默认发到维护者个人 scope `@yisang0910/*`，它随账号立即可用。
          将来建好组织再把包迁过去（改名前先确认没有对外文档引用旧名）。
-      3. 账号若开了「发布级 2FA」（auth-and-writes），每次 publish 都要 `-Otp`。
-         想一劳永逸：`npm profile set tfa auth-only --otp=<码>`，
-         之后只有登录/改密要码，发布不要。
+      3. **账号必须开启 2FA**，否则一定 403。这是 npm 2026 年的新政策，不是配置错：
+         - 2026-07-31 起，bypass-2FA 的 granular token 被禁止做账号级操作
+           （建 token / 改包权限 / 配 trusted publishing 都要交互式 2FA 挑战）
+         - 报错原文：`Two-factor authentication or granular access token with
+           bypass 2fa enabled is required to publish packages.`
+           查 token 详情会看到 `"bypass_2fa": false` —— 而这个开关现在建不出来
+         - 2027-01 起 bypass-2FA token 连直接发布也要收走，只剩「读私有包 + 暂存发布」
+         所以开 2FA 是唯一出路：网页 → Account → Two-Factor Authentication → 用
+         手机认证器扫码。开完之后本脚本加 `-Otp <6位码>` 就能发。
+         想彻底免码就走 trusted publishing（见 .github/workflows/publish-npm.yml）。
       4. 本机 npm 若指向镜像源，发布时必须显式走官方源 —— 脚本已写死 --registry
 
     发布顺序不能乱：mcp 和 gateway 依赖 core，core 必须先进去。
@@ -19,8 +26,7 @@
 
 .EXAMPLE
     .\release-npm.ps1 -DryRun      # 只打包看内容，不发布
-    .\release-npm.ps1              # 真发布
-    .\release-npm.ps1 -Otp 123456   # 账号开了 2FA 时带上一次性码
+    .\release-npm.ps1 -Otp 123456   # 开了 2FA 之后：带一次性码真发布
 #>
 [CmdletBinding()]
 param(
