@@ -11,6 +11,8 @@ coverage/
 .vitest/
 .tmp/
 downloads/
+__pycache__/
+*.pyc
 
 # 机器人的真实配置（白名单、chat_id、setup_token、gateway_token、App Secret）
 # 只留在 PVE 的 /opt/feishu-bot/ 上，权限 0600。仓库里只有 *.example。

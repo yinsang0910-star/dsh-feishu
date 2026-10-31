@@ -87,6 +87,11 @@ DEFAULTS = {
     # 群里要不要 @ 才响应：false = 群里直接说话就行（图片消息本来就带不了 @）。
     # 随时可用 /要@ /免@ 切换，会写回 config.json。
     "group_require_mention": False,
+    # 模型与思考强度：写在这里而不是改 agent 上的 profile，--patch 单次生效、随时可退。
+    # model 留空 = 用 profile 自己的默认；reasoning_effort 取 off/low/high/max。
+    "model": "deepseek-v4.1-flash",
+    "reasoning_effort": "high",
+    "model_override_path": "/home/agent/.cache/feishu/model-override.yml",
     "agent_host": "192.168.1.100",
     "agent_user": "agent",
     "agent_key": "/root/.ssh/agent_rsa",
@@ -109,18 +114,25 @@ _LOCK = threading.RLock()
 INFO = """直接说要做什么就行，我会转给 agent 工作站上的 DSH（每人一份独立记忆）。
 要文件就直接说「把 XX 的 Word 发我」——它会真的把文件传过来。
 
-四条命令，够用了：
-/状态    现在在跑什么、排队几个、上次结果
-/项目    看看有哪些工作区，可以切过去
-/新      清空我这份记忆，从头开始（话题换了就用它）
+换脑子：
+/模型    现在用哪个模型，按钮直接换（/模型 列表 看全部）
+/思考    思考强度：不思考 / 省着点 / 正常 / 想到底
+
+看状态：
+/状态    在跑什么、排队几个、用的什么脑子
+/排队    排了哪些活；/清队 清空
 /额度    模型用量还剩多少
+
+管记忆与项目：
+/项目    看看有哪些工作区，可以切过去（/cd 名字）
+/新      清空我这份记忆，从头开始（话题换了就用它）
 
 群里不用 @：直接说话就行，发图也一样（/要@ 可改回必须 @）
 
 其余口语就能办：
 停 / 继续            中止或延长正在跑的任务
 危险动作            我会发卡片问你要不要放行，点按钮即可
-/help                再看一遍这段"""
+/help                再看一遍这段（发的是卡片，按钮能直接点）"""
 
 DANGER = [
     r"\brm\s+-[a-zA-Z]*[rf]", r"\bmkfs(\.\w+)?\b", r"\bdd\b[^\n]*\bof=",
@@ -859,6 +871,322 @@ class Task(object):
                 log.exception("kill 失败")
 
 
+# ─────────────────── 模型 / 思考强度（可切换） ───────────────────
+#
+# 这两项本进程不消费，是写给 agent 上的 DSH 的：dsh 启动时用 --patch 叠一层覆盖，
+# 把 agent-default-model 的 model / reasoningEffort 换掉。不直接改 profile 的
+# cordis.patch.yml，因为那份是 agent 机上所有 headless 调用共用的；--patch 只影响
+# 这一次任务，随时能退。
+
+# agent-default-model 的 schema 只认这四档（实测 deepseek-v4.1-flash 只吃 low/high/max）。
+EFFORTS = ("off", "low", "high", "max")
+EFFORT_ZH = {"off": "不思考", "low": "省着点", "high": "正常", "max": "想到底"}
+
+# 目录真源：agent 上那份 pi-ai 自带的模型清单。用 glob 兜住版本路径变化。
+_CATALOG_GLOB = (
+    "/opt/node/lib/node_modules/@deepseek-ai/dsh/node_modules/"
+    "@earendil-works/pi-ai/dist/providers/data/opencode-go.json"
+)
+_CATALOG_CACHE = {"at": 0.0, "rows": []}
+_CATALOG_TTL = 600
+
+# 卡片上默认摆出来的几个（都是实测能跑的），其余走「看全部」。
+MODEL_PICKS = [
+    ("deepseek-v4.1-flash", "日常够用，便宜"),
+    ("deepseek-v4-pro", "最会想，贵一些"),
+    ("glm-5.3-flash", "同价位替补"),
+    ("claude-haiku-5-5", "长文/看图稳"),
+    ("gpt-6-luna", "另一种口味"),
+]
+
+
+def _catalog_script():
+    return (
+        "python3 - <<'PY'\n"
+        "import json, glob\n"
+        "ps = glob.glob('%s')\n"
+        "if not ps:\n"
+        "    print('NOFILE'); raise SystemExit\n"
+        "d = json.load(open(ps[0]))\n"
+        "for api, ms in d.items():\n"
+        "    for k, v in ms.items():\n"
+        "        c = v.get('cost') or {}\n"
+        "        print('|'.join([\n"
+        "            str(v.get('id') or ''), str(v.get('name') or ''), str(api),\n"
+        "            str(v.get('contextWindow') or ''),\n"
+        "            '1' if 'image' in (v.get('input') or []) else '0',\n"
+        "            str(c.get('input') if c.get('input') is not None else ''),\n"
+        "            str(c.get('output') if c.get('output') is not None else ''),\n"
+        "        ]))\n"
+        "PY" % _CATALOG_GLOB
+    )
+
+
+def fetch_models(force=False):
+    """从 agent 上正在用的那份清单读模型，别在代码里抄一份会过期的。"""
+    now = time.time()
+    if not force and _CATALOG_CACHE["rows"] and now - _CATALOG_CACHE["at"] < _CATALOG_TTL:
+        return _CATALOG_CACHE["rows"]
+    code, out = run_agent(_catalog_script(), timeout=60)
+    rows = []
+    if code == 0 and "NOFILE" not in out:
+        for ln in out.splitlines():
+            p = ln.split("|")
+            if len(p) == 7 and p[0]:
+                rows.append({
+                    "id": p[0], "name": p[1], "api": p[2], "ctx": p[3],
+                    "img": p[4] == "1", "in": p[5], "out": p[6],
+                })
+    if rows:
+        _CATALOG_CACHE["rows"] = rows
+        _CATALOG_CACHE["at"] = now
+    return rows or _CATALOG_CACHE["rows"]
+
+
+def _model_label(mid):
+    for r in fetch_models():
+        if r["id"] == mid:
+            return r["name"] or mid
+    return mid
+
+
+def push_model_override():
+    """把当前选择写成一层 patch，让 dsh 启动时叠上去。"""
+    path = CONF.get("model_override_path") or ""
+    if not path:
+        return False
+    model = (CONF.get("model") or "").strip()
+    effort = (CONF.get("reasoning_effort") or "").strip()
+    if not model and not effort:
+        run_agent("rm -f %s" % shlex.quote(path), timeout=20)
+        return True
+    body = (
+        "- id: agent-default-model\n"
+        "  name: \"@deepseek-ai/dsh-agent-default-model\"\n"
+        "  config:\n"
+        "    provider: opencode-go\n"
+    )
+    if model:
+        body += "    model: %s\n" % model
+    if effort:
+        body += "    reasoningEffort: %s\n" % effort
+    q = shlex.quote(path)
+    cmd = (
+        "mkdir -p \"$(dirname %s)\"; cat > %s.tmp <<'YML'\n%sYML\nmv %s.tmp %s && echo OK"
+        % (q, q, body, q, q)
+    )
+    code, out = run_agent(cmd, timeout=30)
+    ok = "OK" in out
+    log.info("模型覆盖写入 %s: model=%s effort=%s ok=%s", path, model, effort, ok)
+    return ok
+
+
+def verify_choice(timeout=150):
+    """真跑一次最短任务，确认这个「模型+档位」组合 provider 认。"""
+    path = CONF.get("model_override_path") or ""
+    if not path:
+        return True, ""
+    cmd = "cd %s; %s --patch %s --json '回答一个字：好'" % (
+        shlex.quote(CONF["agent_root"]), CONF["dsh_cmd"], shlex.quote(path)
+    )
+    code, out = run_agent(cmd, timeout=timeout)
+    if "UNSUPPORTED_REASONING_EFFORT" in out:
+        m = re.search(r'does not support reasoning effort "([^"]+)"', out)
+        return False, "这个模型不吃「%s」这一档" % (m.group(1) if m else CONF.get("reasoning_effort"))
+    if "MISSING_CREDENTIAL" in out or "INVALID_CREDENTIAL" in out:
+        return False, "这个模型当前凭据用不了"
+    if re.search(r'"type":"final"', out):
+        return True, ""
+    tail = " ".join(out.strip().splitlines()[-1:])[:160]
+    return False, tail or "试跑没出结果"
+
+
+def apply_choice(model=None, effort=None):
+    """改一项或两项：先落 patch，再真跑一次；不认就退回原样。返回 (ok, 说明)。"""
+    old_model = CONF.get("model")
+    old_effort = CONF.get("reasoning_effort")
+    if model is not None:
+        # dsh 遇到不认识的模型名不报错，会静默回落到能用的那个，
+        # 所以「试跑成功」证明不了名字对——先拿清单核对一遍。
+        known = {r["id"] for r in fetch_models()}
+        if known and model not in known:
+            near = sorted(k for k in known if model.lower() in k.lower())[:5]
+            return False, "没有这个模型：%s%s" % (
+                model,
+                ("\n相近的：" + "、".join(near)) if near else "\n发 /模型 列表 看全部。",
+            )
+    if model is not None:
+        CONF["model"] = model
+    if effort is not None:
+        CONF["reasoning_effort"] = effort
+    save_conf()
+    if not push_model_override():
+        CONF["model"], CONF["reasoning_effort"] = old_model, old_effort
+        save_conf()
+        push_model_override()
+        return False, "写不进 agent 机上的配置，已退回原样。"
+    ok, why = verify_choice()
+    if not ok:
+        CONF["model"], CONF["reasoning_effort"] = old_model, old_effort
+        save_conf()
+        push_model_override()
+        return False, "%s，已经退回 %s（%s）。" % (
+            why,
+            _model_label(old_model or "") if old_model else "默认模型",
+            EFFORT_ZH.get(old_effort or "", old_effort or "默认"),
+        )
+    return True, ""
+
+
+def _effort_line():
+    e = CONF.get("reasoning_effort") or ""
+    return EFFORT_ZH.get(e, e or "默认")
+
+
+def effort_card():
+    cur = CONF.get("reasoning_effort") or ""
+    btns = []
+    for e in EFFORTS:
+        btns.append({
+            "tag": "button",
+            "text": {"tag": "plain_text", "content": ("✓ " if e == cur else "") + EFFORT_ZH[e]},
+            "type": "primary" if e == cur else "default",
+            "value": {"act": "set_effort", "v": e},
+        })
+    return {
+        "config": {"wide_screen_mode": True, "update_multi": True},
+        "header": {
+            "template": "indigo",
+            "title": {"tag": "plain_text", "content": "思考强度"},
+        },
+        "elements": [
+            {"tag": "div", "text": {"tag": "lark_md",
+                                    "content": "现在是 **%s**（`%s`）。" % (_effort_line(), cur or "未设")}},
+            {"tag": "div", "text": {"tag": "lark_md",
+                                    "content": "往右越贵越慢：不思考最快，想到底最费。\n"
+                                               "不同模型支持的档不一样，切了跑不动我会自动退回并告诉你。"}},
+            {"tag": "action", "actions": btns},
+            {"tag": "note", "elements": [{"tag": "plain_text",
+                                          "content": "也可以直接发：/思考 max"}]},
+        ],
+    }
+
+
+def model_card():
+    cur = CONF.get("model") or ""
+    known = {r["id"]: r for r in fetch_models()}
+    lines = ["现在是 **%s**" % (_model_label(cur) if cur else "（跟 profile 默认走）")]
+    if cur in known:
+        r = known[cur]
+        bits = []
+        if r["in"] not in ("", "None"):
+            bits.append("$%s/$%s 每百万 token" % (r["in"], r["out"]))
+        if r["ctx"]:
+            bits.append("上下文 %s" % _fmt_ctx(r["ctx"]))
+        if r["img"]:
+            bits.append("能看图")
+        if bits:
+            lines.append("　" + " · ".join(bits))
+    btns = []
+    for mid, why in MODEL_PICKS:
+        if mid == cur:
+            continue
+        btns.append({
+            "tag": "button",
+            "text": {"tag": "plain_text", "content": mid},
+            "type": "default",
+            "value": {"act": "set_model", "v": mid},
+        })
+    els = [
+        {"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}},
+        {"tag": "div", "text": {"tag": "lark_md", "content": "**换个模型**"}},
+        {"tag": "action", "actions": btns[:3]},
+    ]
+    if len(btns) > 3:
+        els.append({"tag": "action", "actions": btns[3:]})
+    els.append({
+        "tag": "action",
+        "actions": [{
+            "tag": "button",
+            "text": {"tag": "plain_text", "content": "看全部 %d 个" % len(known)},
+            "type": "default",
+            "value": {"act": "model_all"},
+        }],
+    })
+    els.append({"tag": "note", "elements": [{"tag": "plain_text",
+                                             "content": "也可以直接发：/模型 deepseek-v4-pro"}]})
+    return {
+        "config": {"wide_screen_mode": True, "update_multi": True},
+        "header": {"template": "blue", "title": {"tag": "plain_text", "content": "模型"}},
+        "elements": els,
+    }
+
+
+def _fmt_ctx(v):
+    try:
+        n = int(v)
+    except Exception:
+        return str(v)
+    if n >= 1000000:
+        return "%.1fM" % (n / 1000000.0)
+    return "%dk" % (n // 1000)
+
+
+def models_text():
+    rows = fetch_models(force=True)
+    if not rows:
+        return "读不到模型清单（agent 上找不到 pi-ai 的目录文件）。"
+    cur = CONF.get("model") or ""
+    lines = ["可用模型（%d 个，来自 agent 上那份 DSH 的清单）：" % len(rows)]
+    for r in sorted(rows, key=lambda x: (float(x["in"] or 0) if x["in"] not in ("", "None") else 0)):
+        mark = "▶" if r["id"] == cur else " "
+        cost = "$%s/$%s" % (r["in"], r["out"]) if r["in"] not in ("", "None") else "免费"
+        lines.append("%s %-30s %-9s %s%s" % (
+            mark, r["id"], cost, _fmt_ctx(r["ctx"]), " 可看图" if r["img"] else ""))
+    lines.append("")
+    lines.append("切换：/模型 <名字>")
+    return "\n".join(lines)
+
+
+def help_card():
+    def block(title, rows):
+        return {"tag": "div", "text": {"tag": "lark_md",
+                                       "content": "**%s**\n%s" % (title, "\n".join(rows))}}
+
+    els = [
+        {"tag": "div", "text": {"tag": "lark_md",
+                                "content": "直接说要做什么就行，我转给 agent 工作站上的 DSH（每人一份独立记忆）。"
+                                           "要文件就说「把 XX 的 Word 发我」，它会真的传过来。"}},
+        block("换脑子", [
+            "`/模型` 看现在用哪个，按钮直接换",
+            "`/思考` 换思考强度（不思考 / 省着点 / 正常 / 想到底）",
+        ]),
+        block("看状态", [
+            "`/状态` 在跑什么、排队几个、机器负载",
+            "`/排队` 排了哪些活　`/清队` 清空",
+            "`/额度` 模型用量还剩多少",
+        ]),
+        block("管记忆与项目", [
+            "`/项目` 有哪些工作区　`/cd 名字` 切过去",
+            "`/新` 清空我这份记忆，从头开始",
+        ]),
+        block("管群", [
+            "`/免@` 群里不用 @ 就响应（现在这样）",
+            "`/要@` 改回必须 @",
+        ]),
+        block("其它", [
+            "停 / 继续　中止或延长正在跑的任务",
+            "`/whoami` 我的 open_id 和当前项目　`/name 名字` 让我怎么叫你",
+            "危险动作会发卡片问你要不要放行，点按钮即可",
+        ]),
+    ]
+    return {
+        "config": {"wide_screen_mode": True, "update_multi": True},
+        "header": {"template": "turquoise", "title": {"tag": "plain_text", "content": "能干什么"}},
+        "elements": els,
+    }
+
+
 def dsh_argv(task):
     # FEISHU_CHAT_ID 透给 agent 上的 pushfile —— agent 自己不知道要往哪个会话发文件。
     # 同时写一份兜底文件：万一 dsh 的 bash 工具没继承环境变量，pushfile 还能读到。
@@ -867,7 +1195,7 @@ def dsh_argv(task):
         "export PATH=\"$HOME/.local/bin:$PATH\"; "
         "export FEISHU_CHAT_ID=%s; "
         "mkdir -p ~/.cache/feishu 2>/dev/null && echo %s > ~/.cache/feishu/chat_id 2>/dev/null; "
-        "exec %s --json"
+        "exec %s"
         % (
             shlex.quote(task.cwd), shlex.quote(CONF["agent_root"]),
             shlex.quote(task.chat_id),
@@ -875,6 +1203,11 @@ def dsh_argv(task):
             CONF["dsh_cmd"],
         )
     )
+    # 模型/思考强度走单次 patch 覆盖：改的是这一趟，不碰 profile 本体
+    patch_path = (CONF.get("model_override_path") or "").strip()
+    if patch_path and (CONF.get("model") or CONF.get("reasoning_effort")):
+        cmd += " --patch %s" % shlex.quote(patch_path)
+    cmd += " --json"
     if task.session_id:
         cmd += " --session-id %s" % task.session_id
     cmd += " -"
@@ -1591,8 +1924,56 @@ def handle_inner(data: P2ImMessageReceiveV1):
                 send(chat_id, why)
             return
 
-        if text in ("/help", "help", "帮助", "/?"):
-            send(chat_id, INFO)
+        if text in ("/help", "help", "帮助", "/?", "/指令", "/h"):
+            if not card_create(chat_id, help_card()):
+                send(chat_id, INFO)
+            return
+
+        if text in ("/模型", "/model"):
+            card_create(chat_id, model_card())
+            return
+
+        m = re.match(r"^/(?:模型|model)\s+(.+)$", text, re.S)
+        if m:
+            want = m.group(1).strip()
+            if want in ("列表", "全部", "list", "all"):
+                deliver(chat_id, models_text())
+                return
+            known = {r["id"]: r for r in fetch_models()}
+            if known and want not in known:
+                near = [k for k in known if want.lower() in k.lower()][:6]
+                send(chat_id, "没有这个模型：%s%s" % (
+                    want, "\n相近的：\n" + "\n".join(near) if near else "\n发 /模型 看列表。"))
+                return
+            send(chat_id, "试一下 %s …" % want)
+            ok, why = apply_choice(model=want)
+            if ok:
+                card_create(chat_id, model_card())
+            else:
+                send(chat_id, why)
+            return
+
+        if text in ("/思考", "/effort", "/思考强度"):
+            card_create(chat_id, effort_card())
+            return
+
+        m = re.match(r"^/(?:思考|effort)\s+(.+)$", text, re.S)
+        if m:
+            want = m.group(1).strip().lower()
+            alias = {"关": "off", "不思考": "off", "none": "off", "off": "off",
+                     "省": "low", "省着点": "low", "low": "low", "快": "low",
+                     "中": "high", "正常": "high", "high": "high",
+                     "高": "max", "最高": "max", "想到底": "max", "max": "max"}
+            want = alias.get(want, want)
+            if want not in EFFORTS:
+                send(chat_id, "只有四档：%s" % " / ".join(EFFORTS))
+                return
+            send(chat_id, "试一下「%s」…" % EFFORT_ZH[want])
+            ok, why = apply_choice(effort=want)
+            if ok:
+                card_create(chat_id, effort_card())
+            else:
+                send(chat_id, why)
             return
 
         if text in ("/whoami", "/id", "whoami"):
@@ -1638,8 +2019,17 @@ def handle_inner(data: P2ImMessageReceiveV1):
 
         if text in ("/status", "/状态"):
             mode = "要 @ 才响应" if CONF.get("group_require_mention") else "不用 @ 也响应"
-            send(chat_id, task_brief(sender) + "\n群里：%s（/要@ /免@ 切换）\n\n" % mode
-                 + do_status())
+            cur_model = CONF.get("model") or ""
+            head = (
+                task_brief(sender)
+                + "\n群里：%s（/要@ /免@ 切换）" % mode
+                + "\n脑子：%s · %s（/模型 /思考 换）" % (
+                    _model_label(cur_model) if cur_model else "跟 profile 默认走",
+                    _effort_line(),
+                )
+                + "\n\n"
+            )
+            send(chat_id, head + do_status())
             return
 
         if text in ("/ls", "/projects", "/项目"):
@@ -1802,6 +2192,38 @@ def mark_ask_answered(message_id, answer_text, by_open_id=""):
         log.exception("更新提问卡片异常")
 
 
+def _do_switch(act, value, chat_id, message_id):
+    """卡片按钮里的切换动作：真跑一次验证，成功就原地刷新那张卡。"""
+    try:
+        if act == "model_all":
+            if chat_id:
+                deliver(chat_id, models_text())
+            return
+        if act == "set_model":
+            if not value:
+                return
+            ok, why = apply_choice(model=value)
+            card = model_card()
+        else:
+            if value not in EFFORTS:
+                if chat_id:
+                    send(chat_id, "只有四档：%s" % " / ".join(EFFORTS))
+                return
+            ok, why = apply_choice(effort=value)
+            card = effort_card()
+        if not chat_id:
+            return
+        if ok:
+            if message_id:
+                card_patch(message_id, card)
+            else:
+                card_create(chat_id, card)
+        else:
+            send(chat_id, why)
+    except Exception:
+        log.exception("切换模型/思考强度失败 act=%s v=%s", act, value)
+
+
 def on_card_action(data):
     """卡片按钮回调（长连接）。
 
@@ -1844,6 +2266,18 @@ def on_card_action(data):
                         log.info("token %s 已作答，忽略重复点击", ask_token)
             except Exception:
                 log.exception("处理提问卡反馈失败")
+            return _build_card_response()
+
+        # 模型 / 思考强度卡片：切换要真跑一次验证（十几秒），别堵住回调的 3 秒窗口
+        if act in ("set_model", "set_effort", "model_all"):
+            ctx_obj = getattr(ev, "context", None)
+            chat_id = getattr(ctx_obj, "open_chat_id", "") if ctx_obj else ""
+            mid = getattr(ctx_obj, "open_message_id", "") if ctx_obj else ""
+            threading.Thread(
+                target=_do_switch,
+                args=(act, str(val.get("v") or ""), chat_id, mid),
+                daemon=True,
+            ).start()
             return _build_card_response()
 
         if tok and act:
