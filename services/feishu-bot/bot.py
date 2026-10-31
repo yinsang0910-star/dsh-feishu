@@ -910,15 +910,164 @@ MODEL_PICKS = [
     ("gpt-6-luna", "另一种口味"),
 ]
 
-# auto 档的判据：命中的词、任务长度。宁可判高一点，也不要判低到答不动。
-_DEEP_HINTS = (
-    "仔细", "彻底", "深入", "审查", "审计", "证明", "推导", "论证", "重构",
-    "架构", "设计", "权衡", "为什么", "根因", "排查", "优化", "基准",
-    "对比分析", "方案", "批改", "复盘",
+# ── auto 档的打分器 ─────────────────────────────────────────────
+# 抄的是 LiteLLM 的 ComplexityRouter（litellm/router_strategy/complexity_router）：
+# 不靠「命中一个词就定档」，而是七个维度各自给 -1/0/+1 分，按权重加权求和，再用阈值切档。
+# 权重和阈值沿用它的默认值（那是在真实流量上调过的），只把词表换成中文、把长度门槛按
+# 中文信息密度调小。它原来还带一个 LLM 分类器兜灰区，我们不用——多一次调用换不来准确性，
+# 反而给每条任务加两秒延迟。
+_EFFORT_WEIGHTS = {
+    "length": 0.10,
+    "code": 0.30,
+    "reasoning": 0.25,
+    "technical": 0.25,
+    "simple": 0.05,
+    "multiStep": 0.05,
+    "questions": 0.06,
+}
+# 三档（low / high / max）两条切线。LiteLLM 四档用 0.15 / 0.35 / 0.60，那是英文长 prompt 的
+# 分布；中文短句命中少、分数普遍压在 0.3 以下，直接照搬会把复杂活也判成 low，所以切线按
+# 中文语料的实际分布下调到 0.05 / 0.20。
+_EFFORT_CUTS = {"low_high": 0.05, "high_max": 0.20}
+# 中文一个字大约就是一个 token，所以比 LiteLLM 的 15 / 400 收紧；超过 long 直接判最高档。
+_EFFORT_LEN = {"short": 15, "long": 800}
+
+_KW_CODE = (
+    "代码", "函数", "报错", "异常", "接口", "部署", "编译", "脚本", "仓库", "提交",
+    "合并", "分支", "依赖", "日志", "配置", "数据库", "查询", "索引", "重构", "算法",
+    "实现", "单元测试", "调试", "报错信息", "文件", "目录", "环境变量", "版本",
+    "function", "refactor", "deploy", "docker", "kubernetes", "sql", "python",
+    "javascript", "typescript", "endpoint", "debug", "traceback", "stack trace",
+    "segfault", "migration",
 )
-_LIGHT_HINTS = (
-    "翻译", "改成", "格式化", "润色", "查一下", "是什么", "多少个", "列一下", "回答",
+_KW_REASONING = (
+    "仔细", "彻底", "深入", "严谨", "证明", "推导", "论证", "为什么", "根因", "权衡",
+    "取舍", "评估", "分析", "推理", "分步骤", "一步一步", "思路", "排查", "定位",
+    "复盘", "审查", "审计", "设计", "架构", "批改", "基准", "对比", "比较",
+    "tradeoff", "trade-off", "root cause", "prove", "derive", "step by step",
+    "compare", "analyze", "analyse", "why",
 )
+_KW_TECHNICAL = (
+    "并发", "并行", "线程", "内存", "性能", "延迟", "吞吐", "协议", "加密", "鉴权",
+    "认证", "分布式", "微服务", "扩展性", "一致性", "事务", "缓存", "队列", "调度",
+    "容器", "集群", "网络", "磁盘", "内核", "运行时", "带宽", "负载",
+    "concurrency", "latency", "throughput", "scalability", "consistency", "cache",
+)
+_KW_SIMPLE = (
+    "是什么", "什么是", "多少", "几个", "翻译", "改成", "格式化", "润色", "查一下",
+    "列一下", "列举", "回答", "念一下", "转成", "换成", "你好", "谢谢", "在吗", "随便",
+)
+_MULTI_STEP_RE = re.compile(r"首先|然后|接着|之后|最后|第一步|步骤|依次|同时|以及|并且")
+
+
+def _kw_hits(text, words):
+    return [w for w in words if w in text]
+
+
+def _effort_score(text):
+    """七个维度打分加权求和，返回 (分数, 各维度命中数)。"""
+    t = (text or "").strip()
+    n = len(t)
+    hits = {}
+
+    # 1. 长度：太短往下压，太长往上抬，中间不给分
+    if n < _EFFORT_LEN["short"]:
+        dims = {"length": -1.0}
+    elif n > _EFFORT_LEN["long"]:
+        dims = {"length": 1.0}
+    else:
+        dims = {"length": 0.0}
+
+    # 2. 代码痕迹
+    c = _kw_hits(t, _KW_CODE)
+    hits["code"] = len(c)
+    dims["code"] = 1.0 if len(c) >= 2 else (0.5 if c else 0.0)
+
+    # 3. 推理词
+    r = _kw_hits(t, _KW_REASONING)
+    hits["reasoning"] = len(r)
+    dims["reasoning"] = 1.0 if len(r) >= 2 else (0.7 if r else 0.0)
+
+    # 4. 技术术语。LiteLLM 要命中 2 个才给分（英文技术词太泛），中文这几个词（并发、加密、
+    #    分布式）本身指向性就强，命中一个也该算，只是给得少一点。
+    g = _kw_hits(t, _KW_TECHNICAL)
+    hits["technical"] = len(g)
+    if len(g) >= 4:
+        dims["technical"] = 1.0
+    elif len(g) >= 2:
+        dims["technical"] = 0.6
+    else:
+        dims["technical"] = 0.3 if g else 0.0
+
+    # 5. 轻活信号（反向）。只在没有任何硬信号时才生效：一句话里既有「报错」又有
+    #    「是什么原因」，那是要诊断，不是要查字典，不能被轻活标记拉回去。
+    s = _kw_hits(t, _KW_SIMPLE)
+    hits["simple"] = len(s)
+    dims["simple"] = -1.0 if (s and not (c or r or g)) else 0.0
+    hits["simpleApplied"] = bool(dims["simple"])
+
+    # 6. 多步
+    m = _MULTI_STEP_RE.search(t)
+    hits["multiStep"] = 1 if m else 0
+    dims["multiStep"] = 0.5 if m else 0.0
+
+    # 7. 问句堆叠
+    q = t.count("?") + t.count("？")
+    hits["questions"] = q
+    dims["questions"] = 0.5 if q > 3 else 0.0
+
+    score = round(sum(dims[k] * _EFFORT_WEIGHTS[k] for k in dims), 4)
+    return score, hits
+
+
+def _effort_why(score, hits, text):
+    """把打分结果翻成一句人话，塞进进度卡脚注。"""
+    n = len(text or "")
+    bits = []
+    if hits.get("reasoning"):
+        bits.append("推理×%d" % hits["reasoning"])
+    if hits.get("code"):
+        bits.append("代码×%d" % hits["code"])
+    if hits.get("technical"):
+        bits.append("术语×%d" % hits["technical"])
+    if hits.get("multiStep"):
+        bits.append("多步")
+    if hits.get("questions", 0) > 3:
+        bits.append("%d 个问句" % hits["questions"])
+    if hits.get("simpleApplied"):
+        bits.append("轻活")
+    if n > _EFFORT_LEN["long"]:
+        bits.append("%d 字偏长" % n)
+    elif n < _EFFORT_LEN["short"]:
+        bits.append("只有 %d 字" % n)
+    if not bits:
+        bits.append("没明显信号")
+    return "分 %+.2f · %s" % (score, " ".join(bits))
+
+
+def decide_effort(text):
+    """auto 档：按这条任务的样子挑一个官方档位，返回 (档位, 一句理由)。"""
+    t = (text or "").strip()
+    n = len(t)
+    score, hits = _effort_score(t)
+    # 硬规则一：超长任务直接最高档（LiteLLM 也有这种按大小独立升级的门，不参与加权）
+    if n > _EFFORT_LEN["long"]:
+        return "max", "分 %+.2f · %d 字，太长了" % (score, n)
+    # 硬规则二：带附件（图片/文件）的活至少从 high 起步——看东西本身就要琢磨
+    attach = ".feishu-inbox" in t
+    if score < _EFFORT_CUTS["low_high"]:
+        eff = "high" if attach else "low"
+    elif score < _EFFORT_CUTS["high_max"]:
+        eff = "high"
+    else:
+        eff = "max"
+    # LiteLLM 的 reasoning override：明确要求推理的词出现两次以上，就算总分不高也抬到最高档
+    if hits.get("reasoning", 0) >= 2 and score >= _EFFORT_CUTS["low_high"]:
+        eff = "max"
+    why = _effort_why(score, hits, t)
+    if attach and eff == "high" and score < _EFFORT_CUTS["low_high"]:
+        why += " · 带附件"
+    return eff, why
 
 
 def _catalog_script():
@@ -969,23 +1118,6 @@ def _model_label(mid):
         if r["id"] == mid:
             return r["name"] or mid
     return mid
-
-
-def decide_effort(text):
-    """auto 档：按这条任务的样子挑一个官方档位，返回 (档位, 一句理由)。"""
-    t = (text or "").strip()
-    n = len(t)
-    deep = next((h for h in _DEEP_HINTS if h in t), "")
-    if deep:
-        return "max", "提到「%s」" % deep
-    if n > 1200:
-        return "max", "任务 %d 字，比较长" % n
-    if n <= 15:
-        return "low", "任务只有 %d 字" % n
-    light = next((h for h in _LIGHT_HINTS if h in t), "")
-    if light and n <= 60:
-        return "low", "「%s」这类轻活" % light
-    return "high", "常规任务"
 
 
 def resolve_effort(task):
