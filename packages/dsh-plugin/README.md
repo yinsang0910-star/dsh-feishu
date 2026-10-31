@@ -423,7 +423,7 @@ client 侧（浏览器 Cordis 树）常用：`slots` / `uiRenderer`（`NM\dsh-cl
 
 ```powershell
 # 1) 把包挂进 profile 的 node_modules（和 dsh-purge 一样的手法：现网就是 junction）
-cmd /c mklink /J "C:\Users\<你>\.dsh\profiles\desktop\node_modules\@yisang0910\dsh-plugin" "D:\dsh-feishu\packages\dsh-plugin"
+cmd /c mklink /J "C:\Users\<你>\.dsh\profiles\desktop\node_modules\@yisang0910\plugin" "D:\dsh-feishu\packages\dsh-plugin"
 
 # 2) 在 profile 的 patch 层加一行 insert（不改 cordis.yml，那文件是空的 entry 列表）
 #    编辑 C:\Users\<你>\.dsh\profiles\desktop\cordis.patch.yml，追加：
@@ -598,7 +598,7 @@ secret 不进日志也不进响应、`.tmp` 无残留、`[]` 占位被替换而�
 
 ```powershell
 # 1) junction：包必须在 profile 的 node_modules 下，Loader 才 import 得到
-cmd /c mklink /J "C:\Users\<你>\.dsh\profiles\<profile>\node_modules\@yisang0910\dsh-plugin" "D:\dsh-feishu\packages\dsh-plugin"
+cmd /c mklink /J "C:\Users\<你>\.dsh\profiles\<profile>\node_modules\@yisang0910\plugin" "D:\dsh-feishu\packages\dsh-plugin"
 ```
 
 ```yaml

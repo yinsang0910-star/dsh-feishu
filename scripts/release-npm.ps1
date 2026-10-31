@@ -5,8 +5,14 @@
 .DESCRIPTION
     前提（都是人工步骤，脚本只做检查不代做）：
       1. `npm login --registry=https://registry.npmjs.org`
-      2. 在 npmjs.com 上创建名为 `dsh-feishu` 的组织（scoped 包必须先有 scope）
-      3. 本机 npm 若指向镜像源，发布时必须显式走官方源 —— 脚本已写死 --registry
+      2. scope 必须已存在。npm 没有创建组织的 API（`PUT /-/org/<name>` 返回 404），
+         只能走网页 https://www.npmjs.com/org/create —— 那需要登录态，无法自动化。
+         所以默认发到维护者个人 scope `@yisang0910/*`，它随账号立即可用。
+         将来建好组织再把包迁过去（改名前先确认没有对外文档引用旧名）。
+      3. 账号若开了「发布级 2FA」（auth-and-writes），每次 publish 都要 `-Otp`。
+         想一劳永逸：`npm profile set tfa auth-only --otp=<码>`，
+         之后只有登录/改密要码，发布不要。
+      4. 本机 npm 若指向镜像源，发布时必须显式走官方源 —— 脚本已写死 --registry
 
     发布顺序不能乱：mcp 和 gateway 依赖 core，core 必须先进去。
     pnpm publish 会把 workspace:* 自动替换成实际版本号，不需要手工改。
