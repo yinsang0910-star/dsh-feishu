@@ -9,6 +9,12 @@
   <sub>MCP server · 长连接机器人 · 卡片网关 · DSH 设置页 &nbsp;·&nbsp; MIT</sub>
 </p>
 
+<p align="center">
+  <a href="https://github.com/yinsang0910-star/dsh-feishu/actions/workflows/ci.yml"><img src="https://github.com/yinsang0910-star/dsh-feishu/actions/workflows/ci.yml/badge.svg" alt="ci"></a>
+  <a href="https://github.com/yinsang0910-star/dsh-feishu/releases/latest"><img src="https://img.shields.io/github/v/release/yinsang0910-star/dsh-feishu?label=release" alt="release"></a>
+  <img src="https://img.shields.io/badge/license-MIT-blue" alt="license">
+</p>
+
 ---
 
 飞书里的对话就是 agent 的操作台。你在手机上发一句话，它在你的机器上干活，
@@ -102,14 +108,18 @@ echo '你有哪些 mcp__feishu__ 工具？只列名字' | dsh --profile headless
 
 MCP server 已打成**自包含单文件**（SDK 和 core 都打进去了），不用 `pnpm install`，也不从 npm 装。
 
-**Claude Desktop**：从 [Releases](https://github.com/yinsang0910-star/dsh-feishu-mcp/releases) 下载
-`dsh-feishu-mcp.mcpb`，双击安装，在配置面板填 App ID 与 App Secret。
+**Claude Desktop**：从 [Releases](https://github.com/yinsang0910-star/dsh-feishu/releases/latest) 下载
+`dsh-feishu-mcp-<版本>.mcpb`，双击安装，在配置面板填 App ID 与 App Secret。
+（同一个产物也在 MCP 独立仓库 [dsh-feishu-mcp](https://github.com/yinsang0910-star/dsh-feishu-mcp) 的 Releases 里。）
 
 **其他 stdio 客户端**：
 
 ```bash
 npx github:yinsang0910-star/dsh-feishu-mcp
 ```
+
+或者直接从 [Releases](https://github.com/yinsang0910-star/dsh-feishu/releases/latest) 下
+`dsh-feishu-mcp-<版本>.mjs` 单文件，`node dsh-feishu-mcp.mjs` 就能跑（1.5 MB，含全部依赖）。
 
 给它 `FEISHU_APP_ID` / `FEISHU_APP_SECRET` 就能跑。挂进 DSH 的办法是编辑
 `~/.dsh/profiles/<profile>/cordis.patch.yml`：
@@ -207,9 +217,12 @@ docs/             TOOL-CONTRACT · ARCHITECTURE · DEPLOY · GATEWAY · BOT-INTE
 
 ## 状态
 
-版本 `0.1.0`，**实验阶段**：接口和工具名还会变，暂不保证向后兼容。
+版本 `0.1.0`（[Release v0.1.0](https://github.com/yinsang0910-star/dsh-feishu/releases/tag/v0.1.0)），
+**实验阶段**：接口和工具名还会变，暂不保证向后兼容。
 
-- 194 个单测（core 117 + gateway 77），CI 跑 typecheck + test + build
+- 194 个单测（core 117 + gateway 77），CI 跑 typecheck + test + build + 打包冒烟
+- **下载**：Release 里挂了 `dsh-feishu-mcp-0.1.0.mcpb`（Claude Desktop 双击装）和
+  `dsh-feishu-mcp-0.1.0.mjs`（自包含单文件，`node` 直接跑），附 `SHA256SUMS.txt`
 - **npm 上暂时没有**：npm 的 2FA 政策把首次发布卡住了，原因与出路见
   [docs/NPM-PUBLISH.md](docs/NPM-PUBLISH.md)。插件与 MCP 都能直接从 GitHub 装
   （`dsh plugin … add github:…` / `npx github:…`），不依赖 npm

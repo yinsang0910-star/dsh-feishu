@@ -40,7 +40,10 @@ jobs:
       - name: 构建
         run: pnpm build
 
-      - name: 网关单测（不连飞书）
+      - name: 单测（core 117 + gateway 77）
+        run: pnpm test
+
+      - name: 网关脚本单测（不连飞书）
         run: node scripts/test-gateway.mjs
 
       - name: 打包冒烟（确认 bundle 能产出）
