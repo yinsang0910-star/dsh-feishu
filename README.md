@@ -97,7 +97,14 @@ echo '你有哪些 mcp__feishu__ 工具？只列名字' | dsh --profile headless
 <details>
 <summary>只想挂 MCP，不要机器人</summary>
 
-手工编辑 `~/.dsh/profiles/<profile>/cordis.patch.yml`：
+MCP server 已打成**自包含单文件**（SDK 和 core 都打进去了），不用 `pnpm install`，也不从 npm 装：
+
+```bash
+npx github:yinsang0910-star/dsh-feishu-mcp
+```
+
+给它 `FEISHU_APP_ID` / `FEISHU_APP_SECRET` 就能跑。挂进 DSH 的办法是编辑
+`~/.dsh/profiles/<profile>/cordis.patch.yml`：
 
 ```yaml
 - insert:
@@ -106,8 +113,8 @@ echo '你有哪些 mcp__feishu__ 工具？只列名字' | dsh --profile headless
       config:
         transport: stdio
         serverName: feishu
-        command: node
-        args: ['/绝对路径/packages/mcp/dist/server.js']
+        command: npx
+        args: ['-y', 'github:yinsang0910-star/dsh-feishu-mcp']
         # feishu_ask 最多阻塞 600s，工具超时必须比它大
         toolCallTimeoutMs: 660000
         env:
@@ -117,6 +124,11 @@ echo '你有哪些 mcp__feishu__ 工具？只列名字' | dsh --profile headless
 ```
 
 注意 `serverName: feishu` 决定工具前缀（`mcp__feishu__*`），改了前缀也就变了。
+
+改代码时改成跑本仓库的产物：`command: node` + `args: ['/绝对路径/packages/mcp/dist/server.js']`。
+
+打包产物另有一个仓库：[yinsang0910-star/dsh-feishu-mcp](https://github.com/yinsang0910-star/dsh-feishu-mcp)
+（由 `scripts/publish-mcp-repo.ps1` 单向同步，请勿在那里直接改代码）。
 </details>
 
 ## 25 个工具
