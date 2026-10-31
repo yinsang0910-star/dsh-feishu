@@ -207,6 +207,9 @@ docs/             TOOL-CONTRACT · ARCHITECTURE · DEPLOY · GATEWAY · BOT-INTE
 版本 `0.1.0`，**实验阶段**：接口和工具名还会变，暂不保证向后兼容。
 
 - 194 个单测（core 117 + gateway 77），CI 跑 typecheck + test + build
+- **npm 上暂时没有**：npm 的 2FA 政策把首次发布卡住了，原因与出路见
+  [docs/NPM-PUBLISH.md](docs/NPM-PUBLISH.md)。插件与 MCP 都能直接从 GitHub 装
+  （`dsh plugin … add github:…` / `npx github:…`），不依赖 npm
 - 已知限制：`feishu_ask` 轮询有延迟与配额成本、单文件 30MB 上限、没有多实例锁
   —— 详见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 
