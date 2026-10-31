@@ -51,8 +51,9 @@
                 │ 方法调用（sendText / sendFile / listMessages / listMembers ...）
                 ▼
 ┌──────────────────────────────┐
-│ @yisang0910/mcp  server.ts   │  13 个工具；参数校验、错误翻译、结果拍平
-│                              │  tools/{base,messages,files,context,directory}.ts
+│ @yisang0910/mcp  server.ts   │  25 个工具；参数校验、错误翻译、结果拍平
+│                              │  tools/{base,messages,files,context,
+│                              │         directory,bitable,docs}.ts
 └───────────────┬──────────────┘
                 │ stdio 上的 JSON-RPC（**stdout 专供协议**，日志走 stderr）
                 ▼

@@ -3,6 +3,11 @@
 四个包已经打包就绪（`@yisang0910/core` / `mcp` / `gateway` / `plugin`，均 0.1.0），
 但发布被 npm 的 2FA 政策挡住。这份文档记录实测结论，避免以后重查。
 
+> **当前状态（2026-10-31）**：账号因点过「Use a recovery code」链接进入 **72 小时安全冻结**，
+> `npm whoami` 返回 `E403 your account has been temporarily suspended`。
+> 冻结期间不能发布、不能建 token、不能改设置。解冻时间约 **2026-11-03**。
+> 在此之前请用 GitHub 分发：见根 README 的「安装」段（`dsh plugin … add github:…` 与 `npx github:…`）。
+
 ## 一句话结论
 
 **npm 现在要求：发布必须「账号开了 2FA 且当场提供一次性密码」或「持有一个 bypass-2FA 的
@@ -34,6 +39,7 @@ GET  /-/npm/v1/tokens  → 现有 token bypass_2fa=false
 |---|---|
 | `npm publish --otp=<16 位数字>` | 401 / 404，不是 TOTP 格式 |
 | 用 2FA **恢复码**当 otp | 401，报错明确写 `from your authenticator` |
+| 用恢复码登网页（`Use a recovery code`） | **触发 72 小时安全冻结**，期间发布/建 token/改设置全禁 |
 | `npm token create --bypass-2fa --password <密码>` | 403，政策禁止 |
 | basic auth（`_auth=base64(user:pass)`） | whoami 通，publish 404 |
 | API 建 granular token（`/-/npm/v1/tokens/granular`） | 404，无此端点 |
@@ -51,8 +57,14 @@ GET  /-/npm/v1/tokens  → 现有 token bypass_2fa=false
 npm 上 **Disable** 现有 2FA → 重新 **Enable** → 选 Authenticator app → 出现二维码时
 用手机 App 扫（Microsoft / Google Authenticator 都行）→ 之后每次发布给 6 位码。
 
-注意：Disable 也需要一次性密码，所以**先用恢复码登录网页**再操作（恢复码在 `recovery codes`
-里，一次性消耗）。恢复码只能用于网页登录，**不能**当 `--otp`。
+注意：Disable 也需要一次性密码。**不要走「Use a recovery code」这条路** —— 实测在
+`/login/webauthn` 页点那个链接（即使最后没输码）都会触发 **72 小时安全冻结**，页面原文：
+`Your account will be temporarily suspended. Using a recovery code triggers a 72-hour
+security hold on your account. During this time, you will not be able to publish packages,
+create tokens, or modify account settings.` —— 比原本的问题更麻烦。
+
+正确做法：在已经登录的浏览器里用**安全密钥（Windows Hello）**通过 `/login/webauthn`
+验证，再进 Settings 改 2FA 配置。恢复码也不能当 `--otp`（试过，返回 401）。
 
 ### 2. 网页建一个 long-lived token（一次搞定，之后全自动）
 
