@@ -20,9 +20,13 @@ jobs:
         with:
           version: 11
 
+      # 注意：pnpm 11 要求 Node >= 22.13。若这里给 20，setup-node 的 cache: pnpm
+      # 预热会跑 `pnpm store path`，pnpm 11 加载 node:sqlite 直接崩
+      # （ERR_UNKNOWN_BUILTIN_MODULE: No such built-in module: node:sqlite）。
+      # 产物仍用 esbuild --target=node20，运行期兼容 Node 20。
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: pnpm
 
       - name: 安装依赖
