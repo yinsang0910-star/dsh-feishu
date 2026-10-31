@@ -1,7 +1,7 @@
-# @dshfeishu/core
+# @yisang0910/core
 
 飞书 OpenAPI 客户端、类型契约与卡片模板。零第三方 HTTP 依赖，只用 Node 内置 `fetch`。
 
-给 `@dshfeishu/mcp` 和 `@dshfeishu/gateway` 共用。
+给 `@yisang0910/mcp` 和 `@yisang0910/gateway` 共用。
 
 主仓库：[yinsang0910-star/dsh-feishu](https://github.com/yinsang0910-star/dsh-feishu) · MIT

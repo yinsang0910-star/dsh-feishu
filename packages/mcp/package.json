@@ -1,5 +1,5 @@
 {
-  "name": "@dshfeishu/mcp",
+  "name": "@yisang0910/mcp",
   "publishConfig": {
     "access": "public"
   },
@@ -25,7 +25,7 @@
     "dev": "tsx src/server.ts"
   },
   "dependencies": {
-    "@dshfeishu/core": "workspace:*",
+    "@yisang0910/core": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.32.2",
     "zod": "^4.6.7"
   }

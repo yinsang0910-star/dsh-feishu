@@ -1,5 +1,5 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { FeishuClient, FeishuConfig } from '@dshfeishu/core';
+import type { FeishuClient, FeishuConfig } from '@yisang0910/core';
 
 /** 每个工具模块拿到的运行时上下文 */
 export interface ToolContext {

@@ -16,7 +16,7 @@
  * （/opt/feishu-bot）同时跑会互相丢事件，切换时必须先停掉旧的。
  */
 
-import { loadConfig } from '@dshfeishu/core';
+import { loadConfig } from '@yisang0910/core';
 import * as Lark from '@larksuiteoapi/node-sdk';
 import { createHttpServer } from './http.js';
 import { GatewayState, type CachedMessage } from './state.js';

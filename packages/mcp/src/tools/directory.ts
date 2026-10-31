@@ -13,7 +13,7 @@
 
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { FeishuApiError } from '@dshfeishu/core';
+import { FeishuApiError } from '@yisang0910/core';
 import { ok, fail, type ToolContext } from './types.js';
 
 /** 飞书 page_size 上限是 100，超过会被服务端拒绝 */

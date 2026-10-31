@@ -6,8 +6,8 @@
 
 `dsh-feishu` 把飞书做成一等公民的操作界面。它由两部分组成：
 
-- `@dshfeishu/core` —— 飞书 API 客户端 + 类型 + 卡片模板（已实现，只管用）
-- `@dshfeishu/mcp` —— MCP server，把这些能力暴露成模型可调用的工具（本目录）
+- `@yisang0910/core` —— 飞书 API 客户端 + 类型 + 卡片模板（已实现，只管用）
+- `@yisang0910/mcp` —— MCP server，把这些能力暴露成模型可调用的工具（本目录）
 
 **与 `@larksuiteoapi/lark-mcp` 的分工**：那个搬 OpenAPI 的广度（几百个接口），但**不做**文件发送、不做会话上下文、不做交互等待、不做卡片更新。本项目的价值就在这几个缺口。
 
@@ -82,7 +82,7 @@ return fail('发送失败：...');                                       // 失�
 
 4. **description 用中文，且写清使用场景**。模型靠它决定调不调。反例：`"发送消息"`。正例：`"发一条纯文本到指定会话。适合结论、提示、短回复；超过 30 行或需要排版时改用 feishu_send_card。"`
 5. **文件路径一律 `path.resolve()`**，不要拼接字符串。
-6. **不要新增依赖**。可用：`node:*`、`zod`、`@dshfeishu/core`、`@modelcontextprotocol/sdk`。
+6. **不要新增依赖**。可用：`node:*`、`zod`、`@yisang0910/core`、`@modelcontextprotocol/sdk`。
 7. **不要改** `server.ts` / `tools/index.ts` / `tools/types.ts` / `packages/core/**`。需要新能力就在自己的文件里本地实现，或直接用 `ctx.client` 已有的方法。
 8. **TypeScript 严格模式**：`strict: true` + `noUncheckedIndexedAccess: true`。数组下标取值要判空。
 
@@ -115,7 +115,7 @@ botInfo(): Promise<BotInfo>
 
 `target` 类型是 `SendTarget = string | { id, idType? }`，传 `undefined` 时用 `ctx.config.defaultChatId`。
 
-## 卡片模板（`@dshfeishu/core` 已提供）
+## 卡片模板（`@yisang0910/core` 已提供）
 
 ```ts
 progressCard({ task, steps, visibleSteps?, footer?, title?, tone? })
@@ -136,8 +136,8 @@ FeishuApiError
 
 ```bash
 cd D:\dsh-feishu
-pnpm --filter @dshfeishu/core build
-pnpm --filter @dshfeishu/mcp typecheck
+pnpm --filter @yisang0910/core build
+pnpm --filter @yisang0910/mcp typecheck
 ```
 
 `typecheck` 零错误才算完成。**不要跑 `pnpm install`**（依赖已装好）。

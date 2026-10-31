@@ -11,7 +11,7 @@
 
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { FeishuApiError, type FeishuCard } from '@dshfeishu/core';
+import { FeishuApiError, type FeishuCard } from '@yisang0910/core';
 import { ok, fail, type ToolContext } from './types.js';
 
 /** 把任意异常翻译成给模型看的中文提示；权限类错误带上缺失的 scope */

@@ -1,5 +1,5 @@
 {
-  "name": "@dshfeishu/gateway",
+  "name": "@yisang0910/gateway",
   "publishConfig": {
     "access": "public"
   },
@@ -25,7 +25,7 @@
     "dev": "tsx src/index.ts"
   },
   "dependencies": {
-    "@dshfeishu/core": "workspace:*",
+    "@yisang0910/core": "workspace:*",
     "@larksuiteoapi/node-sdk": "^1.76.0"
   }
 }

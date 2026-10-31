@@ -41,7 +41,7 @@ const DEFAULT_PATH = '/dsh-feishu/api'
 const MAX_BODY_BYTES = 64 * 1024
 
 /** 本包名（同时也是浏览器 bundle 的 `__ModuleLoader__` id）。 */
-const PACKAGE_NAME = '@dshfeishu/plugin'
+const PACKAGE_NAME = '@yisang0910/plugin'
 
 const ENV_HEADER = '# dsh-feishu 凭据 —— 由 DSH 的飞书设置页生成，不要提交'
 

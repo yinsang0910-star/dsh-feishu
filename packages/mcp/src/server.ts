@@ -13,7 +13,7 @@
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { createClient, loadConfig } from '@dshfeishu/core';
+import { createClient, loadConfig } from '@yisang0910/core';
 import { registerAllTools } from './tools/index.js';
 import type { ToolContext } from './tools/types.js';
 

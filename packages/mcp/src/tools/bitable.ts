@@ -18,7 +18,7 @@
 
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { FeishuApiError } from '@dshfeishu/core';
+import { FeishuApiError } from '@yisang0910/core';
 import { ok, fail, type ToolContext } from './types.js';
 
 // ───────────────────────── 常量 ─────────────────────────

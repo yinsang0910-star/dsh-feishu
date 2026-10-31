@@ -1,4 +1,4 @@
-# @dshfeishu/gateway
+# @yisang0910/gateway
 
 常驻小服务：把飞书卡片按钮的点击，精确投递给正在等回答的那次 `feishu_ask`。
 

@@ -18,6 +18,6 @@
 #   envPath       默认 ~/.config/dsh/feishu.env
 - insert:
     - id: dsh-feishu-settings
-      name: '@dshfeishu/plugin'
+      name: '@yisang0910/plugin'
       config:
         endpointPath: /dsh-feishu/api

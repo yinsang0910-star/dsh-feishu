@@ -17,7 +17,7 @@
  * 绝对路径会在子路径部署时逃出挂载前缀。
  */
 window.__ModuleLoader__.load({
-  id: '@dshfeishu/plugin',
+  id: '@yisang0910/plugin',
   factory: (require) => {
     var module = { exports: {} }
     var exports = module.exports
@@ -52,7 +52,7 @@ window.__ModuleLoader__.load({
     var UIStateDot = pick(primitives.StateDot)
     var UIPill = pick(primitives.Pill)
 
-    var ID = '@dshfeishu/plugin'
+    var ID = '@yisang0910/plugin'
     /** 文档相对路径，见文件头注释。 */
     var API = 'dsh-feishu/api'
 

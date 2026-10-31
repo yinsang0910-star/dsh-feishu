@@ -20,7 +20,7 @@
 
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { FeishuApiError } from '@dshfeishu/core';
+import { FeishuApiError } from '@yisang0910/core';
 import { ok, fail, type ToolContext } from './types.js';
 
 /** 云空间 / 知识库的 page_size 上限（超过按上限处理，避免被服务端拒） */
