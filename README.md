@@ -12,6 +12,7 @@
 <p align="center">
   <a href="https://github.com/yinsang0910-star/dsh-feishu/actions/workflows/ci.yml"><img src="https://github.com/yinsang0910-star/dsh-feishu/actions/workflows/ci.yml/badge.svg" alt="ci"></a>
   <a href="https://github.com/yinsang0910-star/dsh-feishu/releases/latest"><img src="https://img.shields.io/github/v/release/yinsang0910-star/dsh-feishu?label=release" alt="release"></a>
+  <a href="https://glama.ai/mcp/servers/yinsang0910-star/dsh-feishu"><img src="https://glama.ai/mcp/servers/yinsang0910-star/dsh-feishu/badges/score.svg" alt="glama"></a>
   <img src="https://img.shields.io/badge/license-MIT-blue" alt="license">
 </p>
 

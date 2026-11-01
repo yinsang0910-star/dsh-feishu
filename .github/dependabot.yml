@@ -16,6 +16,13 @@ updates:
         dependency-type: production
         update-types:
           - patch
+    # TypeScript 7 是编译器重写版，@types/node 解析与默认 lib 都变了，
+    # 升级后 tsc 会报 TS2591/TS2304 一片（Cannot find name 'node:fs' 等）。
+    # 等生态稳定再跟进，先锁在 5.x。
+    ignore:
+      - dependency-name: typescript
+        update-types:
+          - version-update:semver-major
 
   - package-ecosystem: github-actions
     directory: /
