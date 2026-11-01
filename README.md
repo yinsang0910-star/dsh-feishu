@@ -33,10 +33,13 @@
 | 我在高铁上，帮我看下服务器还活着吗 | 回你 CPU / 内存 / 磁盘 / 服务状态 |
 | 发一张试卷照片，说「帮我批改」 | 图**真的被打开看**（`read_image`），逐题对错给你 |
 | 换个最会想的模型，慢慢算 | `/模型` 点按钮换模型、`/思考` 换 `reasoningEffort`（含 `auto` 自动挡），**先真跑一次**确认可用才生效 |
+| 群里三个人同时发话 | 各跑各的（上限 3 个并行），同一个人的任务仍按顺序；回复都 **@ 到人**，群静音也看得见 |
+| 选中一张旧图说「你重新做这个」 | 先回去把那条消息捞出来，图**重新下载落盘**，模型真的再看一遍 |
 
 配套的机器人还管这些：白名单认领、每人一份独立会话记忆、任务队列、超时兜底、每日汇报、危险动作拦截；
 图片和文件消息也能收（[docs/BOT-ATTACHMENTS.md](docs/BOT-ATTACHMENTS.md)），
 群里**不用 @** 也能直接使唤（[docs/BOT-GROUP-MODE.md](docs/BOT-GROUP-MODE.md)）。
+多人同时用、回复 @ 到人、引用旧消息回溯，见 [docs/BOT-RUNTIME.md](docs/BOT-RUNTIME.md)。
 发 `/help` 回一张能点的卡片：换模型、换 `reasoningEffort`（含 `auto` 自动挡）、看状态、管项目、开关群里要不要 @
 ——完整清单在 [docs/BOT-COMMANDS.md](docs/BOT-COMMANDS.md)。
 
@@ -238,6 +241,7 @@ docs/             TOOL-CONTRACT · ARCHITECTURE · DEPLOY · GATEWAY · BOT-INTE
 | [BOT-ATTACHMENTS.md](docs/BOT-ATTACHMENTS.md) | 机器人怎么收图片/文件（`read_image` 真看图） |
 | [BOT-GROUP-MODE.md](docs/BOT-GROUP-MODE.md) | 群聊不用 @ 也能用（`/要@` `/免@`） |
 | [BOT-COMMANDS.md](docs/BOT-COMMANDS.md) | 全部指令 + 换模型/换思考强度怎么落地 |
+| [BOT-RUNTIME.md](docs/BOT-RUNTIME.md) | 并发、回复 @ 到人、引用旧消息回溯 |
 | [AGENT-WORKSPACE.md](docs/AGENT-WORKSPACE.md) | 工作区归档规则 + headless 记忆插件 |
 
 ## License

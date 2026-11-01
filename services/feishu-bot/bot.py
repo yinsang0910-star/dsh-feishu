@@ -87,6 +87,9 @@ DEFAULTS = {
     # 群里要不要 @ 才响应：false = 群里直接说话就行（图片消息本来就带不了 @）。
     # 随时可用 /要@ /免@ 切换，会写回 config.json。
     "group_require_mention": False,
+    # 同时能跑几个人的任务。同一个人永远串行（会话要连续），不同的人各自并行；
+    # 总并发受限于 agent 机的内存和模型额度，超了就排队。
+    "max_concurrent": 3,
     # 模型与思考强度：写在这里而不是改 agent 上的 profile，--patch 单次生效、随时可退。
     # model 留空 = 用 profile 自己的默认；reasoning_effort 取 auto/off/low/high/max
     # （auto = 每条任务按内容现算一档，进度卡上写明挑了哪档）。
@@ -306,7 +309,14 @@ def join_group(open_id):
     return False
 
 
-def send(chat_id, text, msg_type="text"):
+def send(chat_id, text, msg_type="text", at=None):
+    """at 传 open_id 就在正文前 @ 他。
+
+    群里常年静音，不 @ 等于没回——飞书只对 @ 和回复给通知，所以凡是「回某个人」
+    的地方都要带 at。机器人自己的日报之类主动推送就别带。
+    """
+    if at and msg_type == "text":
+        text = '<at user_id="%s"></at> %s' % (at, text)
     body = (
         CreateMessageRequestBody.builder()
         .receive_id(chat_id)
@@ -423,22 +433,23 @@ def send_file(chat_id, filename, data: bytes):
     return True, ""
 
 
-def deliver(chat_id, text, title="结果"):
+def deliver(chat_id, text, title="结果", at=None):
     """⑫ 超过 max_inline_lines 行或 4000 字 → 贴成文件。"""
     lines = text.count("\n") + 1
     limit_lines = int(CONF["max_inline_lines"])
     if lines <= limit_lines and len(text) <= 4000:
-        return send(chat_id, text)
+        return send(chat_id, text, at=at)
     name = "%s-%s.txt" % (title, datetime.now().strftime("%Y%m%d-%H%M%S"))
     ok, why = send_file(chat_id, name, text.encode("utf-8"))
     if ok:
-        send(chat_id, "（%d 行，已贴成文件 %s）" % (lines, name))
+        send(chat_id, "（%d 行，已贴成文件 %s）" % (lines, name), at=at)
         return True
     head = "\n".join(text.splitlines()[:limit_lines])
     send(
         chat_id,
         "（%d 行，本该贴成文件，但%s；先给前 %d 行）\n%s\n…"
         % (lines, why, limit_lines, head),
+        at=at,
     )
     return False
 
@@ -603,6 +614,125 @@ def materialize_attachment(chat_id, open_id, message_id, att, caption):
         return "%s\n他附言：%s" % (line, head), head
     return (line + "\n他没写别的要求：先用两三句话说清你看到的是什么，再问他要怎么处理。",
             default_label)
+
+
+# ─────────────────── 引用/回复：把「这个」还原出来 ───────────────────
+
+def fetch_message(message_id):
+    """按 message_id 取一条消息本体。用来还原「他回复的那条」。"""
+    tok = _tenant_token()
+    if not tok:
+        return None, "取 tenant_access_token 失败"
+    url = "https://open.feishu.cn/open-apis/im/v1/messages/%s" % message_id
+    try:
+        req = urllib.request.Request(url, headers={"Authorization": "Bearer " + tok})
+        with urllib.request.urlopen(req, timeout=20) as r:
+            data = json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        detail = ""
+        try:
+            detail = e.read()[:300].decode("utf-8", "replace")
+        except Exception:
+            pass
+        return None, "HTTP %s %s" % (e.code, detail)
+    except Exception as e:
+        return None, str(e)
+    items = (data.get("data") or {}).get("items") or []
+    return (items[0] if items else None), ""
+
+
+def _flatten_post(content):
+    """富文本（post）消息 → 纯文本。"""
+    out = []
+    title = (content.get("title") or "").strip()
+    if title:
+        out.append(title)
+    for para in content.get("content") or []:
+        seg = []
+        for node in para or []:
+            tag = node.get("tag")
+            if tag in ("text", "a", "at"):
+                seg.append(node.get("text") or node.get("href") or "")
+            elif tag == "img":
+                seg.append("[图片]")
+            elif tag == "code_block":
+                seg.append(node.get("text") or "")
+        if seg:
+            out.append("".join(seg))
+    return "\n".join(out).strip()
+
+
+def _flatten_card(content):
+    """卡片消息 → 纯文本（就是机器人自己发过的那张结果卡）。"""
+    out = []
+    title = ((content.get("header") or {}).get("title") or {}).get("content") or ""
+    if title:
+        out.append(title)
+    for el in content.get("elements") or []:
+        txt = (el.get("text") or {}).get("content")
+        if txt:
+            out.append(txt)
+        for sub in el.get("elements") or []:
+            t2 = sub.get("content")
+            if t2:
+                out.append(t2)
+    return "\n".join(out).strip()
+
+
+def resolve_quote(chat_id, open_id, parent_id):
+    """把「他引用的那条消息」还原成任务描述的一部分。
+
+    飞书事件只带 parent_id，内容要再查一次；图片还得单独下载落盘，否则模型只看到
+    「你重新做这个」，压根不知道「这个」是什么，只能接着当前上下文瞎猜。
+    返回 (附加说明, 附件描述或 None)。
+    """
+    item, err = fetch_message(parent_id)
+    if not item:
+        log.info("取被引用消息失败 mid=%s err=%s", parent_id, err)
+        return "", None
+
+    mt = item.get("msg_type") or ""
+    try:
+        content = json.loads((item.get("body") or {}).get("content") or "{}")
+    except Exception:
+        content = {}
+    by_oid = ((item.get("sender") or {}).get("id")) or ""
+    by = who_name(by_oid) if by_oid else ""
+    if by.startswith("…"):
+        by = "别人"          # 还没记住名字，别把 open_id 尾巴露在提示里
+    who = "（%s 发的）" % by if by else ""
+
+    # 引用里带图/文件：当成这次任务的附件，跟直接发图走同一条路
+    if mt == "image":
+        key = content.get("image_key") or ""
+        if key:
+            return ("【他引用了%s的一条图片消息，下面这张就是】\n\n【他这句话】" % who,
+                    {"kind": "image", "rtype": "image", "key": key, "name": "",
+                     "_mid": parent_id})
+        return "【他引用了一条图片消息，但取不到图】\n\n【他这句话】", None
+    if mt in ("file", "media", "audio"):
+        key = content.get("file_key") or ""
+        name = (content.get("file_name") or "").strip()
+        if key:
+            return ("【他引用了%s的一个文件，下面这个就是】\n\n【他这句话】" % who,
+                    {"kind": "file", "rtype": "file", "key": key, "name": name,
+                     "_mid": parent_id})
+        return "【他引用了一个文件消息，但取不到文件】\n\n【他这句话】", None
+
+    if mt == "text":
+        body = (content.get("text") or "").strip()
+    elif mt == "post":
+        body = _flatten_post(content)
+    elif mt == "interactive":
+        body = _flatten_card(content)
+    elif mt == "sticker":
+        body = "[表情包]"
+    else:
+        body = "[一条 %s 消息]" % mt
+    body = body[:1200]
+    if not body:
+        return "", None
+    return "【他引用了%s的这条消息】\n%s\n\n【他这句话】\n" % (who, body), None
 
 
 # ─────────────────────────── agent 通道 ───────────────────────────
@@ -818,7 +948,35 @@ PROMPT_TMPL = (
 )
 
 RUNNING = {}   # open_id -> Task
-QUEUES = {}    # open_id -> deque(dict)  排队等当前任务跑完
+QUEUES = {}    # open_id -> deque(dict)  同一个人排队（会话要连续，不能并行）
+# 跨用户并行：不同的人各跑各的，互不挡。一个人仍然串行——同一份 session 两个进程同时写
+# 会打架，所以「同人排队、跨人并行」，总并发由 max_concurrent 兜住（agent 机不是无限的）。
+_ACTIVE = [0]
+_ACTIVE_LOCK = threading.Lock()
+
+
+def _acquire_slot():
+    with _ACTIVE_LOCK:
+        if _ACTIVE[0] >= int(CONF.get("max_concurrent") or 3):
+            return False
+        _ACTIVE[0] += 1
+        return True
+
+
+def _release_slot():
+    with _ACTIVE_LOCK:
+        _ACTIVE[0] = max(0, _ACTIVE[0] - 1)
+
+
+def _at_for(chat_id, open_id):
+    """私聊不用 @（本来就有通知），群里才 @ 他。"""
+    types_ = STATE.get("chat_types") or {}
+    return open_id if types_.get(chat_id) in ("group", "topic") else None
+
+
+def _running_count():
+    with _ACTIVE_LOCK:
+        return _ACTIVE[0]
 
 
 def cur_cwd(open_id):
@@ -1484,6 +1642,13 @@ def _seconds_of(task):
     return time.time() - task.started
 
 
+def _at_el(open_id):
+    """卡片里 @ 人：飞书卡片 markdown 用 <at id=open_id></at>（和文本消息的写法不同）。"""
+    if not open_id:
+        return None
+    return {"tag": "div", "text": {"tag": "lark_md", "content": "<at id=%s></at>" % open_id}}
+
+
 def build_progress_card(task):
     """整块进度卡：标题 + 任务 + 最近几步 + 脚注。永远只有这一条消息。"""
     total = len(task.steps_log)
@@ -1506,27 +1671,30 @@ def build_progress_card(task):
         why = getattr(task, "effort_why", "") or ""
         if used:
             auto_note = "　·　reasoningEffort auto → %s（%s）" % (used, why or "常规任务")
+    els = []
+    at = _at_el(getattr(task, "open_id", ""))
+    if at:
+        els.append(at)
+    els.append({"tag": "div", "text": {"tag": "lark_md", "content": "**%s**" % _esc(head)}})
+    els.append({"tag": "hr"})
+    els.append({"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(rows)}})
+    els.append({
+        "tag": "note",
+        "elements": [{
+            "tag": "plain_text",
+            "content": "已用 %s · 第 %d 步 · %s%s"
+                       % (_dur(_seconds_of(task)), max(total, 1),
+                          task.cwd.rstrip("/").rsplit("/", 1)[-1] or task.cwd,
+                          auto_note),
+        }],
+    })
     return {
         "config": {"wide_screen_mode": True, "update_multi": True},
         "header": {
             "template": "blue",
             "title": {"tag": "plain_text", "content": "🧠 正在处理"},
         },
-        "elements": [
-            {"tag": "div", "text": {"tag": "lark_md", "content": "**%s**" % _esc(head)}},
-            {"tag": "hr"},
-            {"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(rows)}},
-            {
-                "tag": "note",
-                "elements": [{
-                    "tag": "plain_text",
-                    "content": "已用 %s · 第 %d 步 · %s%s"
-                               % (_dur(_seconds_of(task)), max(total, 1),
-                                  task.cwd.rstrip("/").rsplit("/", 1)[-1] or task.cwd,
-                                  auto_note),
-                }],
-            },
-        ],
+        "elements": els,
     }
 
 
@@ -1536,6 +1704,9 @@ def build_final_card(task, ok, body, note=""):
         ok, note = False, note or "已中止"
     icon, title, tpl = ("✅ 完成", 1, "green") if ok else ("⛔ 没成", 0, "red")
     els = []
+    at = _at_el(getattr(task, "open_id", ""))
+    if at:
+        els.append(at)
     if body:
         els.append({"tag": "div", "text": {"tag": "lark_md", "content": body[:3200]}})
     if note:
@@ -1650,24 +1821,34 @@ def run_dsh_once(task):
 
 
 def worker(task):
-    """跑完一个任务后，把这个人队列里的下一个顶上来。"""
+    """跑完一个任务后，交回并发槽，再把等着的任务尽量顶上来。"""
     try:
         worker_body(task)
     except Exception:
         log.exception("worker_body 抛出未捕获异常")
     finally:
         RUNNING.pop(task.open_id, None)
-        drain_queue(task.open_id)
+        _release_slot()
+        pump()
 
 
-def drain_queue(open_id):
-    q = QUEUES.get(open_id)
-    if not q:
-        return
-    nxt = q.popleft()
-    log.info("队列继续 open_id=%s 剩 %d 个", open_id, len(q))
-    start_task(open_id, nxt["chat_id"], nxt["text"], nxt["cwd"], nxt.get("approved", False),
-               nxt.get("label"))
+def pump():
+    """把空的并发槽填满：不同的人各跑各的，同一个人的队列按先后接上。"""
+    while True:
+        if not _acquire_slot():
+            return
+        picked = None
+        for oid, q in list(QUEUES.items()):
+            if q and oid not in RUNNING:
+                picked = (oid, q.popleft())
+                break
+        if not picked:
+            _release_slot()
+            return
+        oid, nxt = picked
+        log.info("队列继续 open_id=%s 剩 %d 个", oid, len(QUEUES.get(oid) or ()))
+        _launch(oid, nxt["chat_id"], nxt["text"], nxt["cwd"],
+                nxt.get("approved", False), nxt.get("label"))
 
 
 def worker_body(task):
@@ -1755,8 +1936,13 @@ def worker_body(task):
     lines = body.count("\n") + 1
     if task.card_id and lines <= int(CONF["max_inline_lines"]) and len(body) <= 3000:
         if card_patch(task.card_id, build_final_card(task, ok, body)):
+            # 卡片原地刷新不会推通知，群里静音就看不见「好了」。
+            # 跑得久的补一条带 @ 的短消息（短的就不吵了，进度卡那条通知够用）。
+            if dur >= 30:
+                send(task.chat_id, "%s 好了，在上一条卡片里（用时 %s）"
+                     % ("✅" if ok else "⛔", _dur(dur)), at=task.open_id)
             return
-    deliver(task.chat_id, body, title="结果")
+    deliver(task.chat_id, body, title="结果", at=task.open_id)
 
 
 def watchdog(task):
@@ -1786,17 +1972,32 @@ def watchdog(task):
             return
 
 
-def start_task(open_id, chat_id, text, cwd=None, approved=False, label=None):
-    cwd = cwd or cur_cwd(open_id)
+def _launch(open_id, chat_id, text, cwd, approved=False, label=None):
+    """真正起一条任务。调用前必须已经拿到并发槽。"""
     sid = STATE["sessions"].get(sess_key(open_id, cwd))
     task = Task(open_id, chat_id, text, sid, approved, cwd, label)
     resolve_effort(task)          # auto 档在这里定成具体档位，进度卡上会写明
+    RUNNING[open_id] = task       # 先占住，别让同一人连发两条挤进来
     # ⑤ 一条进度卡，原地刷新 —— 不再「收到」+ 8 条「· bash: …」刷屏
     task.card_id = card_create(chat_id, build_progress_card(task)) or ""
-    log.info("task start open_id=%s card=%s cwd=%s effort=%s(%s)",
+    log.info("task start open_id=%s card=%s cwd=%s effort=%s(%s) 在跑 %d/%d",
              open_id, task.card_id, cwd, getattr(task, "effort_used", ""),
-             getattr(task, "effort_why", ""))
+             getattr(task, "effort_why", ""), _running_count(),
+             int(CONF.get("max_concurrent") or 3))
     threading.Thread(target=worker, args=(task,), daemon=True).start()
+
+
+def start_task(open_id, chat_id, text, cwd=None, approved=False, label=None):
+    cwd = cwd or cur_cwd(open_id)
+    if not _acquire_slot():
+        QUEUES.setdefault(open_id, collections.deque()).append(
+            {"text": text, "chat_id": chat_id, "cwd": cwd, "approved": approved,
+             "label": label})
+        send(chat_id, "⏳ 现在 %d 个任务同时在跑，这个排上队了，空出来自动接上。"
+                      % int(CONF.get("max_concurrent") or 3), at=_at_for(chat_id, open_id))
+        log.info("并发满了，入队 open_id=%s", open_id)
+        return
+    _launch(open_id, chat_id, text, cwd, approved, label)
 
 
 def pending_task(open_id, chat_id, text, session_id=None, approved=False, label=None):
@@ -1811,11 +2012,12 @@ def pending_task(open_id, chat_id, text, session_id=None, approved=False, label=
     q = QUEUES.setdefault(open_id, collections.deque())
     busy = open_id in RUNNING
     if busy or q:
-        # 一个人同时只跑一个，后面的排成先来先跑
+        # 同一个人的活必须排队：两份进程同时写同一份 session 会打架
         q.append({"text": text, "chat_id": chat_id, "cwd": cwd, "approved": approved,
                   "label": label})
         ahead = len(q) + (1 if busy else 0)
-        send(chat_id, "⏳ 前面还有 %d 个在跑，这个排上队了，完了自动接上。" % ahead)
+        send(chat_id, "⏳ 你前面还有 %d 个在跑，这个排上队了，完了自动接上。" % ahead,
+             at=_at_for(chat_id, open_id))
         log.info("入队 open_id=%s pos=%d", open_id, ahead)
         return
     start_task(open_id, chat_id, text, cwd, approved, label)
@@ -1988,6 +2190,14 @@ def handle_inner(data: P2ImMessageReceiveV1):
         msg_type = msg.message_type
         log.info("recv type=%s chat=%s chat_type=%s sender=%s", msg_type, chat_id, chat_type, sender)
 
+        is_group = chat_type in ("group", "topic")
+        STATE.setdefault("chat_types", {})[chat_id] = chat_type
+
+        def reply(t, **kw):
+            """回复这条消息的发起人。群里一律 @ 他——群常年静音，不 @ 等于没回。"""
+            kw.setdefault("at", sender if is_group else None)
+            return send(chat_id, t, **kw)
+
         if chat_type in ("group", "topic"):
             STATE["last_group_chat_id"] = chat_id
             if sender not in STATE["users"]:
@@ -2003,13 +2213,13 @@ def handle_inner(data: P2ImMessageReceiveV1):
             log.info("attachment type=%s name=%s", msg_type, (att or {}).get("name"))
             if not att:
                 if chat_type not in ("group", "topic"):
-                    send(chat_id, "这条 %s 消息里没带附件 key，取不到东西。" % msg_type)
+                    reply("这条 %s 消息里没带附件 key，取不到东西。" % msg_type)
                 log.info("附件消息没带 key，忽略 type=%s", msg_type)
                 return
         else:
             # 群里免 @ 之后，别人发个表情包/合并转发不该收到任何提示
             if chat_type not in ("group", "topic"):
-                send(chat_id, "这个我暂时接不住（%s）。发文字、图片、文件都行。" % msg_type)
+                reply("这个我暂时接不住（%s）。发文字、图片、文件都行。" % msg_type)
             log.info("不支持的 msg_type=%s，忽略", msg_type)
             return
 
@@ -2023,7 +2233,7 @@ def handle_inner(data: P2ImMessageReceiveV1):
                 and CONF.get("group_require_mention")):
             if allowed(sender):
                 stash_attachment(chat_id, sender, msg, att)
-                send(chat_id, "📎 收到了：%s。15 分钟内 @我 说要拿它干什么，"
+                reply("📎 收到了：%s。15 分钟内 @我 说要拿它干什么，"
                               "我就一起处理。" % ("图片" if att["kind"] == "image" else "文件"))
                 log.info("群里附件先收着 sender=%s kind=%s", sender, att["kind"])
             return
@@ -2050,9 +2260,20 @@ def handle_inner(data: P2ImMessageReceiveV1):
                 }
                 log.info("挂上待处理附件 key=%s kind=%s", st["key"], att["kind"])
 
-        # 还没 @ 出文字（只 @ 了一下）→ 给提示
-        if not text and not att:
-            send(chat_id, "在。直接说要做什么就行（看 /help）。")
+        # 引用/回复某条消息：飞书事件只给 parent_id，内容得再查一次。
+        # 不还原的话，「你重新做这个」里的「这个」模型根本看不见——它只会接着当前上下文瞎猜。
+        quote_note = ""
+        pid = (getattr(msg, "parent_id", "") or "").strip()
+        if pid and pid != (getattr(msg, "message_id", "") or ""):
+            quote_note, qatt = resolve_quote(chat_id, sender, pid)
+            if qatt and not att:
+                att = qatt
+            log.info("引用了 mid=%s 还原出 %d 字%s", pid, len(quote_note),
+                     " + 附件" if qatt else "")
+
+        # 还没 @ 出文字（只 @ 了一下）→ 给提示。引用了东西也算有内容
+        if not text and not att and not quote_note:
+            reply("在。直接说要做什么就行（看 /help）。")
             return
 
         # ② 白名单：先放行自助开通，再拒绝外人
@@ -2060,9 +2281,9 @@ def handle_inner(data: P2ImMessageReceiveV1):
         if m:
             tok = (CONF.get("setup_token") or "").strip()
             if not tok:
-                send(chat_id, "管理员还没设 setup_token，认领通道没开。")
+                reply("管理员还没设 setup_token，认领通道没开。")
             elif m.group(1) != tok:
-                send(chat_id, "口令不对。")
+                reply("口令不对。")
                 log.warning("claim 口令错误 sender=%s", sender)
             else:
                 wl = CONF.setdefault("allowed_open_ids", [])
@@ -2070,33 +2291,33 @@ def handle_inner(data: P2ImMessageReceiveV1):
                     wl.append(sender)
                     save_conf()
                     log.info("claim 成功 sender=%s 白名单共 %d 人", sender, len(wl))
-                send(chat_id, "认领成功，你在白名单里了（白名单共 %d 人）。\n"
+                reply("认领成功，你在白名单里了（白名单共 %d 人）。\n"
                               "现在直接说话我就转给 DSH。先试一句：/status" % len(wl))
                 if join_group(sender):
-                    send(chat_id, "顺手把你拉进「G2 指挥群」了，群里直接说话就行（要 @ 也行）。")
+                    reply("顺手把你拉进「G2 指挥群」了，群里直接说话就行（要 @ 也行）。")
             return
 
         m = re.match(r"^/(allow|deny)\s+(\S+)$", text)
         if m:
             if not allowed(sender):
-                send(chat_id, "只有白名单里的人能改白名单。")
+                reply("只有白名单里的人能改白名单。")
                 return
             act, target = m.group(1), m.group(2).strip()
             wl = CONF.setdefault("allowed_open_ids", [])
             if act == "allow":
                 if target in wl:
-                    send(chat_id, "%s 已经在白名单里。" % target)
+                    reply("%s 已经在白名单里。" % target)
                 else:
                     wl.append(target)
                     save_conf()
-                    send(chat_id, "已加入 %s（白名单共 %d 人）。" % (target, len(wl)))
+                    reply("已加入 %s（白名单共 %d 人）。" % (target, len(wl)))
             else:
                 if target not in wl:
-                    send(chat_id, "%s 本来就不在白名单里。" % target)
+                    reply("%s 本来就不在白名单里。" % target)
                 else:
                     wl.remove(target)
                     save_conf()
-                    send(chat_id, "已移出 %s（白名单共 %d 人）。" % (target, len(wl)))
+                    reply("已移出 %s（白名单共 %d 人）。" % (target, len(wl)))
             return
 
         if not allowed(sender):
@@ -2113,7 +2334,7 @@ def handle_inner(data: P2ImMessageReceiveV1):
                     "（口令由我当面/另外渠道给你，别贴群里。）" % sender,
                 )
             else:
-                send(chat_id, "你在白名单外（open_id：%s），找管理员加一下：\n"
+                reply("你在白名单外（open_id：%s），找管理员加一下：\n"
                               "/allow %s" % (sender, sender))
             return
 
@@ -2122,6 +2343,8 @@ def handle_inner(data: P2ImMessageReceiveV1):
             save_state()
 
         # 附件：取回字节 → 落进工作目录 → 把路径写进任务描述（沙箱只认 cwd 内的文件）
+        if quote_note:
+            text = quote_note + text
         label = None
         if att:
             text, label = materialize_attachment(
@@ -2136,9 +2359,9 @@ def handle_inner(data: P2ImMessageReceiveV1):
             t = RUNNING.get(sender)
             if t:
                 t.extend.set()
-                send(chat_id, "收到，继续等。")
+                reply("收到，继续等。")
             else:
-                send(chat_id, "现在没有在跑的任务。")
+                reply("现在没有在跑的任务。")
             return
         if text in ("停", "/stop", "/停", "中止", "取消"):
             t = RUNNING.get(sender)
@@ -2146,9 +2369,9 @@ def handle_inner(data: P2ImMessageReceiveV1):
                 t.kill()
                 q = QUEUES.get(sender)
                 tail = "（队列里还有 %d 个，会继续跑；/清队 可清空）" % len(q) if q else ""
-                send(chat_id, "已发中止信号。" + tail)
+                reply("已发中止信号。" + tail)
             else:
-                send(chat_id, "现在没有在跑的任务。")
+                reply("现在没有在跑的任务。")
             return
 
         m = re.match(r"^(?:/批|批|/approve)\s*(\w+)$", text) or re.match(r"^(?:/拒|拒|/reject)\s*(\w+)$", text)
@@ -2156,12 +2379,12 @@ def handle_inner(data: P2ImMessageReceiveV1):
             act = "approve" if text[0] in "/批" else "cancel"
             ok, why = resolve_approval(m.group(1), act, sender)
             if not ok:
-                send(chat_id, why)
+                reply(why)
             return
 
         if text in ("/help", "help", "帮助", "/?", "/指令", "/h"):
             if not card_create(chat_id, help_card()):
-                send(chat_id, INFO)
+                reply(INFO)
             return
 
         if text in ("/模型", "/model"):
@@ -2177,15 +2400,15 @@ def handle_inner(data: P2ImMessageReceiveV1):
             known = {r["id"]: r for r in fetch_models()}
             if known and want not in known:
                 near = [k for k in known if want.lower() in k.lower()][:6]
-                send(chat_id, "没有这个模型：%s%s" % (
+                reply("没有这个模型：%s%s" % (
                     want, "\n相近的：\n" + "\n".join(near) if near else "\n发 /模型 看列表。"))
                 return
-            send(chat_id, "试一下 %s …" % want)
+            reply("试一下 %s …" % want)
             ok, why = apply_choice(model=want)
             if ok:
                 card_create(chat_id, model_card())
             else:
-                send(chat_id, why)
+                reply(why)
             return
 
         if text in ("/思考", "/effort", "/思考强度"):
@@ -2202,14 +2425,14 @@ def handle_inner(data: P2ImMessageReceiveV1):
                      "最高": "max", "max": "max"}
             want = alias.get(want, want)
             if want not in EFFORTS:
-                send(chat_id, "reasoningEffort 只有 %s 这几档。" % " / ".join(EFFORTS))
+                reply("reasoningEffort 只有 %s 这几档。" % " / ".join(EFFORTS))
                 return
-            send(chat_id, "试一下 %s …" % want)
+            reply("试一下 %s …" % want)
             ok, why = apply_choice(effort=want)
             if ok:
                 card_create(chat_id, effort_card())
             else:
-                send(chat_id, why)
+                reply(why)
             return
 
         if text in ("/whoami", "/id", "whoami"):
@@ -2231,7 +2454,7 @@ def handle_inner(data: P2ImMessageReceiveV1):
         if m:
             STATE["users"].setdefault(sender, {})["name"] = m.group(1).strip()[:24]
             save_state()
-            send(chat_id, "好，以后日报里叫你 %s。" % who_name(sender))
+            reply("好，以后日报里叫你 %s。" % who_name(sender))
             return
 
         m = re.match(r"^/(mention|要@|免@)\s*(on|off|开|关)?$", text)
@@ -2247,10 +2470,10 @@ def handle_inner(data: P2ImMessageReceiveV1):
             CONF["group_require_mention"] = cur
             save_conf()
             if cur:
-                send(chat_id, "好，群里以后要 @ 我才干活。"
+                reply("好，群里以后要 @ 我才干活。"
                               "图片消息带不了 @，会先收着，等你 @ 一句再挂上去。")
             else:
-                send(chat_id, "好，群里不用 @ 了，直接说话就行（发图也一样）。")
+                reply("好，群里不用 @ 了，直接说话就行（发图也一样）。")
             return
 
         if text in ("/status", "/状态"):
@@ -2265,7 +2488,7 @@ def handle_inner(data: P2ImMessageReceiveV1):
                 )
                 + "\n\n"
             )
-            send(chat_id, head + do_status())
+            reply(head + do_status())
             return
 
         if text in ("/ls", "/projects", "/项目"):
@@ -2278,7 +2501,7 @@ def handle_inner(data: P2ImMessageReceiveV1):
                 timeout=90,
             )
             if code != 0:
-                send(chat_id, "列不出来（exit=%d）：%s" % (code, out[:400]))
+                reply("列不出来（exit=%d）：%s" % (code, out[:400]))
                 return
             here = cur_cwd(sender)
             lines = ["agent 上的项目（%s）：" % root]
@@ -2305,12 +2528,12 @@ def handle_inner(data: P2ImMessageReceiveV1):
                 "test -d %s && echo OK || echo NO" % shlex.quote(target), timeout=25
             )
             if "OK" not in out:
-                send(chat_id, "没有这个目录：%s\n先 /ls 看一眼。" % target)
+                reply("没有这个目录：%s\n先 /ls 看一眼。" % target)
                 return
             STATE["cwd"][sender] = target
             save_state()
             sid = STATE["sessions"].get(sess_key(sender, target))
-            send(chat_id, "切到「%s」。%s" % (
+            reply("切到「%s」。%s" % (
                 target.rstrip("/").rsplit("/", 1)[-1],
                 "这个项目有旧记忆，接着用。" if sid else "这个目录下第一句话会新开记忆。"))
             log.info("cd open_id=%s -> %s", sender, target)
@@ -2333,7 +2556,7 @@ def handle_inner(data: P2ImMessageReceiveV1):
                     lines.append("  …还有 %d 个" % (len(q) - 10))
             else:
                 lines.append("队列是空的。")
-            send(chat_id, "\n".join(lines))
+            reply("\n".join(lines))
             return
 
         if text in ("/清队", "/clearq", "/clearqueue"):
@@ -2341,7 +2564,7 @@ def handle_inner(data: P2ImMessageReceiveV1):
             n = len(q) if q else 0
             if q:
                 q.clear()
-            send(chat_id, "已清掉 %d 个排队任务。" % n if n else "队列本来就是空的。")
+            reply("已清掉 %d 个排队任务。" % n if n else "队列本来就是空的。")
             return
 
         if text in ("/new", "/reset", "/重置", "/新"):
@@ -2349,11 +2572,11 @@ def handle_inner(data: P2ImMessageReceiveV1):
             for k in keys:
                 STATE["sessions"].pop(k, None)
             save_state()
-            send(chat_id, "记忆清空了（%d 份），下一条从头开始。" % len(keys))
+            reply("记忆清空了（%d 份），下一条从头开始。" % len(keys))
             return
 
         if text in ("/cost", "/额度"):
-            send(chat_id, "\n".join(usage_lines()))
+            reply("\n".join(usage_lines()))
             return
 
         m = re.match(r"^/(agent|pve)\s+(.+)$", text, re.S)
@@ -2370,7 +2593,7 @@ def handle_inner(data: P2ImMessageReceiveV1):
                                  {"target": target, "command": command, "label": command[:60]},
                                  "在 %s 上执行含「%s」的命令" % (target, hit), command)
                 return
-            send(chat_id, "▶ 在 %s 执行：%s" % (target, command))
+            reply("▶ 在 %s 执行：%s" % (target, command))
             t0 = time.time()
             code, out = run_agent(command) if target == "agent" else run_pve(command)
             deliver(chat_id, "✔ %s 完成（%.1fs，exit=%d）\n%s" % (target, time.time() - t0, code, out))
@@ -2378,7 +2601,7 @@ def handle_inner(data: P2ImMessageReceiveV1):
 
         # 不认得的斜杠命令不要当成任务丢给 DSH（它会把 /xxx 当普通文字瞎猜）
         if re.match(r"^/[A-Za-z\u4e00-\u9fff]+$", text) and len(text) <= 12:
-            send(chat_id, "没这个命令：%s\n看看 /help，或者直接说要做什么。" % text)
+            reply("没这个命令：%s\n看看 /help，或者直接说要做什么。" % text)
             return
 
         # ⑨⑩ 其余全部交给 DSH（群里也先给 DSH 一家）
