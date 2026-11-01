@@ -73,7 +73,7 @@ $srcPkg = Get-Content (Join-Path $src 'package.json') -Raw | ConvertFrom-Json
 $pkg = [ordered]@{
     name        = 'dsh-feishu-mcp'
     version     = $srcPkg.version
-    description = '飞书 / Lark MCP server：25 个工具，能真发文件进会话、读上下文、停下来等人拍板'
+    description = '飞书 / Lark MCP server：36 个工具，能真发文件进会话、读上下文、停下来等人拍板'
     type        = 'module'
     bin         = [ordered]@{ 'dsh-feishu-mcp' = "./$bundleName" }
     files       = @($bundleName, 'README.md', 'LICENSE')
@@ -96,7 +96,7 @@ Copy-Item $licenseSrc (Join-Path $out 'LICENSE') -Force
 $readme = @"
 # dsh-feishu-mcp
 
-飞书 / Lark 的 MCP server，25 个工具。**不需要公网 IP**：它走飞书长连接或 HTTP 回调拿事件，
+飞书 / Lark 的 MCP server，36 个工具。**不需要公网 IP**：它走飞书长连接或 HTTP 回调拿事件，
 你在任何一台能上网的机器上跑就行。
 
 **主仓库在 [yinsang0910-star/dsh-feishu](https://github.com/yinsang0910-star/dsh-feishu)** ——
@@ -136,9 +136,9 @@ export FEISHU_APP_SECRET=xxxxxxxx
 ``````
 
 写进 ``~/.dsh/profiles/<profile>/cordis.patch.yml``，重启 DSH 后 agent 会多出
-``mcp__feishu__*`` 25 个工具。
+``mcp__feishu__*`` 36 个工具。
 
-## 25 个工具
+## 36 个工具
 
 | 组 | 工具 |
 |---|---|
@@ -205,7 +205,7 @@ $manifest = [ordered]@{
     name             = 'dsh-feishu'
     display_name     = '飞书 / Lark'
     version          = $srcPkg.version
-    description      = '25 个工具的飞书 MCP server：把本地文件真的发进会话、读会话上下文、发进度卡、停下来等人拍板。不需要公网 IP。'
+    description      = '36 个工具的飞书 MCP server：把本地文件真的发进会话、读会话上下文、发进度卡、停下来等人拍板。不需要公网 IP。'
     long_description = @'
 把飞书变成一个可以操作的工作界面，而不是又一个通知渠道。
 

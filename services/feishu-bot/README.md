@@ -76,7 +76,7 @@ cd <仓库>\services\feishu-bot
 
 ## 和 MCP / gateway 的分工
 
-- **bot.py**：飞书收发、白名单、队列、进度卡、斜杠命令。它**不直接调本仓库的 25 个 MCP 工具**——
+- **bot.py**：飞书收发、白名单、队列、进度卡、斜杠命令。它**不直接调本仓库的 36 个 MCP 工具**——
   那是 agent 进程内部的工具。
 - **`dsh-feishu-mcp`**（本仓库 `packages/mcp`）：装在 agent 的 headless profile 里，给模型用。
 - **`dsh-feishu-gateway`**（`packages/gateway`）：常驻进程，只负责把卡片按钮点击精确投递给正在等回答的

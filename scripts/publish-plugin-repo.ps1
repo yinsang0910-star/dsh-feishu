@@ -80,7 +80,7 @@ $readme = @"
 DeepSeek Harness 设置面板里的「飞书连接」页：四步向导，把飞书接进 DSH。
 
 **主仓库在 [yinsang0910-star/dsh-feishu](https://github.com/yinsang0910-star/dsh-feishu)**
-——25 个 MCP 工具、长连接机器人、卡片网关都在那边。这个仓库只是为了能被插件目录收录，
+——36 个 MCP 工具、长连接机器人、卡片网关都在那边。这个仓库只是为了能被插件目录收录，
 由主仓库的 `scripts/publish-plugin-repo.ps1` 单向同步生成，**请勿直接在此提交代码**。
 
 ## 装
