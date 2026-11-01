@@ -1,0 +1,67 @@
+name: 报告问题
+description: 机器人不响应、发不出文件、卡片不刷新、MCP 工具报错等
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        贴日志前请先脱敏：App Secret、token、真实 open_id / chat_id / file_key、服务器地址、本机用户名都不要出现。详见 SECURITY.md。
+
+  - type: dropdown
+    id: surface
+    attributes:
+      label: 出问题的部分
+      options:
+        - 机器人（services/feishu-bot）
+        - MCP server（packages/mcp）
+        - 设置页向导（packages/dsh-plugin）
+        - 卡片网关（packages/gateway）
+        - 安装脚本 / 文档
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: 版本
+      description: Release tag、commit sha，或 `dsh --version` 的输出
+      placeholder: v0.1.0 / 1d38784
+    validations:
+      required: true
+
+  - type: textarea
+    id: what
+    attributes:
+      label: 现象
+      description: 你期待发生什么，实际发生了什么
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. 在群里发「…」
+        2. 机器人回「…」
+        3. 期望「…」
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志（脱敏后）
+      description: 机器人日志在 /var/log/feishu-bot/bot.log；MCP 相关可附 `tools/list` 的输出
+      render: shell
+
+  - type: checkboxes
+    id: scrub
+    attributes:
+      label: 确认
+      options:
+        - label: 已移除凭据与真实 ID
+          required: true
+        - label: 已搜索过现有 issue
+          required: true

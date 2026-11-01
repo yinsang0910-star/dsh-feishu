@@ -293,6 +293,8 @@ docs/             架构 · 契约 · 工具清单 · 各模块说明
 | [AGENT-WORKSPACE.md](docs/AGENT-WORKSPACE.md) | 工作区归档规则与清理分级 |
 | [NPM-PUBLISH.md](docs/NPM-PUBLISH.md) | 发布到 npm 的阻塞点与出路 |
 
+另有两份仓库级说明：[CONTRIBUTING.md](CONTRIBUTING.md)（环境、目录、提交前要跑什么）与 [SECURITY.md](SECURITY.md)（凭据放在哪、怎么报告问题、设计上的边界）。
+
 ## License
 
 MIT

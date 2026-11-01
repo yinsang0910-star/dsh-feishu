@@ -1,0 +1,44 @@
+name: 功能建议
+description: 希望机器人或 MCP server 支持的能力
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: dropdown
+    id: surface
+    attributes:
+      label: 相关部分
+      options:
+        - 机器人（services/feishu-bot）
+        - MCP server（packages/mcp）
+        - 设置页向导（packages/dsh-plugin）
+        - 卡片网关（packages/gateway）
+        - 文档 / 脚本
+    validations:
+      required: true
+
+  - type: textarea
+    id: need
+    attributes:
+      label: 你想解决什么
+      description: 描述场景，不必先想实现方案
+    validations:
+      required: true
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: 你想到的做法（可选）
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 试过的替代方案（可选）
+      description: 比如用 MCP 工具组合、直接调 OpenAPI、换别的插件
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: 确认
+      options:
+        - label: 已搜索过现有 issue
+          required: true
