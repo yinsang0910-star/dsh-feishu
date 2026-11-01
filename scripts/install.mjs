@@ -333,6 +333,8 @@ async function main() {
   log('  1. 重启 DSH（Web GUI 或桌面 App）');
   log(`  2. 让模型报一下工具：echo '你有哪些 mcp__feishu__ 工具？只列名字' | dsh --profile ${profile} --json -`);
   log('  3. 想验证发文件：pnpm smoke:write');
+  log('\n建议同时装上记忆插件，否则跨会话不记事（详见 docs/MNEMON.md）：');
+  log('  bash services/agent-workspace/install-mnemon.sh');
 }
 
 main().catch((err) => {

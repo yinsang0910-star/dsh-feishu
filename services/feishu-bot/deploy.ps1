@@ -170,6 +170,8 @@ Write-Host "  启动异常 : $(if ($trace.Trim()) { $trace.Trim() } else { '无'
 
 if ($ok) {
     Write-Host "`n✓ 部署成功。$remoteBak 可回滚（.\deploy.ps1 -Rollback -Execute）。" -ForegroundColor Green
+    Write-Host '  提示：agent 机 headless profile 若还没装记忆插件，机器人跨会话不会记事。' -ForegroundColor DarkGray
+    Write-Host '        bash services/agent-workspace/install-mnemon.sh    详见 docs/MNEMON.md' -ForegroundColor DarkGray
 } else {
     Write-Host "`n✗ 健康检查未通过，自动回滚到 $remoteBak ..." -ForegroundColor Red
     Invoke-Pve "cp '$remoteBak' $RemoteFile && systemctl restart $Service" | Out-Null

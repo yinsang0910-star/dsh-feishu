@@ -98,3 +98,4 @@ cd <仓库>\services\feishu-bot
 - `docs/BOT-INTEGRATION.md` — bot.py 与网关对接的那部分改动
 - `docs/GATEWAY.md` — 网关协议与部署
 - `docs/ARCHITECTURE.md` — MCP / core / gateway / plugin 的分层
+- `docs/MNEMON.md` — 推荐搭配的记忆插件（headless profile 也要装，否则跨会话不记事）
