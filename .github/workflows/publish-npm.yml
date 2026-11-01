@@ -23,7 +23,7 @@ jobs:
       contents: read
       id-token: write # trusted publishing 必需：让 npm 验证这个 workflow 的身份
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: pnpm/action-setup@v4
         with:
