@@ -1,0 +1,17 @@
+node_modules
+**/node_modules
+dist
+**/dist
+dist-single
+.publish
+.tmp
+.git
+.github
+docs
+services
+*.log
+*.bak-*
+.env
+.env.*
+config.env
+feishu.env

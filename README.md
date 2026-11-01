@@ -127,6 +127,15 @@ npx github:yinsang0910-star/dsh-feishu-mcp
 或从 [Releases](https://github.com/yinsang0910-star/dsh-feishu/releases/latest) 下载
 `dsh-feishu-mcp-<版本>.mjs`，`node dsh-feishu-mcp.mjs` 即可运行（1.5 MB，含全部依赖）。
 
+**Docker**（镜像里不含任何凭据，运行时注入）：
+
+```bash
+docker build -t dsh-feishu-mcp .
+docker run --rm -i -e FEISHU_APP_ID=cli_xxx -e FEISHU_APP_SECRET=xxx dsh-feishu-mcp
+```
+
+未配置凭据时进程仍会启动并完成握手，`tools/list` 正常返回 36 个工具，只有真正调用工具才返回「飞书凭据未配置」——目录站与客户端的自检因此不会看到「server 崩了」。
+
 提供 `FEISHU_APP_ID` / `FEISHU_APP_SECRET` 即可运行。挂进 DSH 的方式是编辑
 `~/.dsh/profiles/<profile>/cordis.patch.yml`：
 

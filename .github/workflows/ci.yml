@@ -59,3 +59,30 @@ jobs:
 
 # 注意：scripts/smoke.mjs 需要真实飞书凭据，CI 里不跑。
 # 本地验证用：pnpm smoke / pnpm smoke:write
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 构建镜像
+        run: docker build -t dsh-feishu-mcp:ci .
+
+      # 目录站与客户端做 introspection 时都不会带凭据：不配 FEISHU_APP_ID
+      # 也必须能握手、能 tools/list，只有真正调用工具才报配置错误。
+      - name: 无凭据启动冒烟
+        run: |
+          printf '%s\n' \
+            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"ci","version":"1"}}}' \
+            '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+            '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+            | docker run --rm -i dsh-feishu-mcp:ci > out.jsonl
+          node -e "
+            const lines = require('node:fs').readFileSync('out.jsonl','utf8').trim().split('\n').map(JSON.parse);
+            const init = lines.find(l => l.id === 1);
+            const list = lines.find(l => l.id === 2);
+            if (!init?.result?.serverInfo) throw new Error('initialize 没有返回 serverInfo');
+            const n = list?.result?.tools?.length ?? 0;
+            if (n < 30) throw new Error('tools/list 只拿到 ' + n + ' 个工具');
+            console.log('initialize ok, tools=' + n);
+          "
