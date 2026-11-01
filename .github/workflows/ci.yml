@@ -24,7 +24,7 @@ jobs:
       # 预热会跑 `pnpm store path`，pnpm 11 加载 node:sqlite 直接崩
       # （ERR_UNKNOWN_BUILTIN_MODULE: No such built-in module: node:sqlite）。
       # 产物仍用 esbuild --target=node20，运行期兼容 Node 20。
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
