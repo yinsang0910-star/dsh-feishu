@@ -790,6 +790,10 @@ def task_brief(open_id):
                         cur.cwd.rstrip("/").rsplit("/", 1)[-1] or cur.cwd))
     else:
         lines.append("现在没在跑。")
+    busy = _running_count()
+    if busy:
+        lines.append("（全局 %d 路在跑，上限 %d）"
+                     % (busy, int(CONF.get("max_concurrent") or 3)))
     if q:
         lines.append("⏳ 排队 %d 个：" % len(q))
         for i, it in enumerate(list(q)[:5], 1):

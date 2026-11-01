@@ -39,7 +39,8 @@
 配套的机器人还管这些：白名单认领、每人一份独立会话记忆、任务队列、超时兜底、每日汇报、危险动作拦截；
 图片和文件消息也能收（[docs/BOT-ATTACHMENTS.md](docs/BOT-ATTACHMENTS.md)），
 群里**不用 @** 也能直接使唤（[docs/BOT-GROUP-MODE.md](docs/BOT-GROUP-MODE.md)）。
-多人同时用、回复 @ 到人、引用旧消息回溯，见 [docs/BOT-RUNTIME.md](docs/BOT-RUNTIME.md)。
+多人同时用、回复 @ 到人、引用旧消息回溯，见 [docs/BOT-RUNTIME.md](docs/BOT-RUNTIME.md)；
+`/状态` 里能看到现在全局几路在跑。
 发 `/help` 回一张能点的卡片：换模型、换 `reasoningEffort`（含 `auto` 自动挡）、看状态、管项目、开关群里要不要 @
 ——完整清单在 [docs/BOT-COMMANDS.md](docs/BOT-COMMANDS.md)。
 
