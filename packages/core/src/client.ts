@@ -299,6 +299,143 @@ export class FeishuClient {
     await this.request('DELETE', `/im/v1/messages/${encodeURIComponent(messageId)}`);
   }
 
+  /** 转发一条消息到别的会话（原文原样，不经过模型重写） */
+  async forwardMessage(
+    messageId: string,
+    receiveId: string,
+    receiveIdType: 'chat_id' | 'open_id' | 'email' = 'chat_id',
+  ): Promise<SentMessage> {
+    const data = await this.request<Record<string, unknown>>(
+      'POST',
+      `/im/v1/messages/${encodeURIComponent(messageId)}/forward`,
+      { query: { receive_id_type: receiveIdType }, body: { receive_id: receiveId } },
+    );
+    return {
+      messageId: String(data['message_id'] ?? ''),
+      chatId: String(data['chat_id'] ?? ''),
+      msgType: 'forward',
+    };
+  }
+
+  /** 置顶一条消息 */
+  async pinMessage(messageId: string): Promise<void> {
+    await this.request('POST', '/im/v1/pins', { body: { message_id: messageId } });
+  }
+
+  /** 取消置顶 */
+  async unpinMessage(messageId: string): Promise<void> {
+    await this.request('DELETE', `/im/v1/pins/${encodeURIComponent(messageId)}`);
+  }
+
+  /** 改群信息：群名 / 描述 / 公告之外的基础设置 */
+  async updateChat(
+    chatId: string,
+    patch: {
+      name?: string;
+      description?: string;
+      addMemberPermission?: string;
+      shareCardPermission?: string;
+      atAllPermission?: string;
+    },
+  ): Promise<void> {
+    const body: Record<string, unknown> = {};
+    if (patch.name !== undefined) body['name'] = patch.name;
+    if (patch.description !== undefined) body['description'] = patch.description;
+    if (patch.addMemberPermission !== undefined) {
+      body['add_member_permission'] = patch.addMemberPermission;
+    }
+    if (patch.shareCardPermission !== undefined) {
+      body['share_card_permission'] = patch.shareCardPermission;
+    }
+    if (patch.atAllPermission !== undefined) body['at_all_permission'] = patch.atAllPermission;
+    if (!Object.keys(body).length) return;
+    await this.request('PATCH', `/im/v1/chats/${encodeURIComponent(chatId)}`, { body });
+  }
+
+  /** 建群 */
+  async createChat(
+    name: string,
+    description = '',
+    userIds: string[] = [],
+  ): Promise<{ chatId: string }> {
+    const body: Record<string, unknown> = { name, description };
+    if (userIds.length) {
+      body['user_id_list'] = userIds;
+    }
+    const data = await this.request<Record<string, unknown>>('POST', '/im/v1/chats', {
+      query: { user_id_type: 'open_id' },
+      body,
+    });
+    return { chatId: String(data['chat_id'] ?? '') };
+  }
+
+  /** 解散群（不可撤销，机器人必须是群主） */
+  async dissolveChat(chatId: string): Promise<void> {
+    await this.request('DELETE', `/im/v1/chats/${encodeURIComponent(chatId)}`);
+  }
+
+  /** 删云空间里的文件/文档（不是消息附件——附件用 recallMessage 删消息） */
+  async deleteDriveFile(
+    fileToken: string,
+    type: 'file' | 'docx' | 'sheet' | 'bitable' | 'folder' | 'doc' | 'mindnote' | 'slides' =
+      'file',
+  ): Promise<void> {
+    await this.request('DELETE', `/drive/v1/files/${encodeURIComponent(fileToken)}`, {
+      query: { type },
+    });
+  }
+
+  /**
+   * 列群里发过的文件（群「文件」标签页的等价物）。
+   *
+   * 飞书没有「群文件列表」这个端点，文件是挂在消息上的，只能翻消息再筛。
+   */
+  async listChatFiles(
+    chatId: string,
+    opts: { pageSize?: number; pages?: number; keyword?: string } = {},
+  ): Promise<
+    Array<{
+      messageId: string;
+      fileKey: string;
+      fileName: string;
+      bytes: number;
+      createTime: string;
+      senderId?: string;
+    }>
+  > {
+    const pages = Math.max(1, Math.min(20, opts.pages ?? 3));
+    const pageSize = Math.max(1, Math.min(50, opts.pageSize ?? 50));
+    const out: Array<{
+      messageId: string;
+      fileKey: string;
+      fileName: string;
+      bytes: number;
+      createTime: string;
+      senderId?: string;
+    }> = [];
+    let pageToken: string | undefined;
+    for (let i = 0; i < pages; i++) {
+      const page = await this.listMessages(chatId, { pageSize, pageToken, sort: 'desc' });
+      for (const m of page.items) {
+        if (m.msgType !== 'file' && m.msgType !== 'media' && m.msgType !== 'audio') continue;
+        const c = (m.content ?? {}) as Record<string, unknown>;
+        const name = String(c['file_name'] ?? '');
+        if (opts.keyword && !name.includes(opts.keyword)) continue;
+        out.push({
+          messageId: m.messageId,
+          fileKey: String(c['file_key'] ?? ''),
+          fileName: name,
+          bytes: Number(c['file_size'] ?? 0),
+          createTime: m.createTime,
+          senderId: m.senderId,
+        });
+      }
+      if (!page.hasMore || !page.pageToken) break;
+      pageToken = page.pageToken;
+    }
+    return out;
+  }
+
   // ───────────────────────── 上传并发送 ─────────────────────────
 
   /** 上传任意文件到 IM（file_type=stream），返回 file_key */

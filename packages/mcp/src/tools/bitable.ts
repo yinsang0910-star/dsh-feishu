@@ -523,6 +523,55 @@ export function registerBitableTools(server: McpServer, ctx: ToolContext): void 
     },
   );
 
+  // ───────────────────────── 5.5 删除记录 ─────────────────────────
+
+  server.registerTool(
+    'feishu_bitable_delete',
+    {
+      title: '删除多维表格记录',
+      description:
+        '按 record_id 删掉一条记录。**不可撤销**：删了就没了，没有回收站。' +
+        'record_id 必须先通过 feishu_bitable_records 查到，别自己编。' +
+        '一次只能删一条，要删多条就多次调用。' +
+        '如果用户只是想改状态（比如改成「已完成」），用 feishu_bitable_update，别删。',
+      inputSchema: {
+        app_token: z.string().min(1).describe('多维表格的 app_token（Base 链接里 /base/ 后面那串）'),
+        table_id: z.string().min(1).describe('记录所在的数据表 id（形如 tbliz1PrMZkp1DSN）'),
+        record_id: z
+          .string()
+          .min(1)
+          .describe('要删除的记录 id（rec 开头）。先用 feishu_bitable_records 查出来，别猜。'),
+        confirm: z
+          .literal(true)
+          .describe('必须传 true 表示确认删除。这是防手滑：删记录不可恢复。'),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
+    },
+    async ({ app_token, table_id, record_id }) => {
+      try {
+        const appToken = app_token.trim();
+        const tableId = table_id.trim();
+        const recordId = record_id.trim();
+        if (!recordId.startsWith('rec')) {
+          return fail(
+            `record_id 看着不像记录 id（应形如 recxxxxxxxx）：${recordId}。` +
+              '先用 feishu_bitable_records 查出来再删。',
+          );
+        }
+
+        await ctx.client.deleteBitableRecord(appToken, tableId, recordId);
+
+        return ok(`已删除记录 ${recordId}（表 ${tableId}）。`, {
+          app_token: appToken,
+          table_id: tableId,
+          record_id: recordId,
+        });
+      } catch (err) {
+        return fail(describeError(err, '删除记录'));
+      }
+    },
+  );
+
   // ───────────────────────── 6. 新建电子表格 ─────────────────────────
 
   server.registerTool(

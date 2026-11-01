@@ -13,6 +13,7 @@ import { registerFileTools } from './files.js';
 import { registerContextTools } from './context.js';
 import { registerDirectoryTools } from './directory.js';
 import { registerBitableTools } from './bitable.js';
+import { registerChatTools } from './chat.js';
 import { registerDocsTools } from './docs.js';
 
 export function registerAllTools(server: McpServer, ctx: ToolContext): void {
@@ -22,6 +23,8 @@ export function registerAllTools(server: McpServer, ctx: ToolContext): void {
   registerFileTools(server, ctx);
   registerContextTools(server, ctx);
   registerDirectoryTools(server, ctx);
+  // 群与消息管理（撤回 / 转发 / 置顶 / 改群 / 建群解散 / 群文件 / 删云文档）
+  registerChatTools(server, ctx);
   // 内容域（多维表格 / 电子表格 / 文档 / 云空间 / 知识库 / 通讯录）
   registerBitableTools(server, ctx);
   registerDocsTools(server, ctx);

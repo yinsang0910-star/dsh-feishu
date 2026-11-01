@@ -642,14 +642,18 @@ def fetch_message(message_id):
 
 
 def _flatten_post(content):
-    """富文本（post）消息 → 纯文本。"""
+    """富文本（post）消息 → 纯文本。形状也不稳定，一律先判类型再钻。"""
+    if not isinstance(content, dict):
+        return ""
     out = []
-    title = (content.get("title") or "").strip()
-    if title:
-        out.append(title)
+    title = content.get("title")
+    if isinstance(title, str) and title.strip():
+        out.append(title.strip())
     for para in content.get("content") or []:
         seg = []
         for node in para or []:
+            if not isinstance(node, dict):
+                continue
             tag = node.get("tag")
             if tag in ("text", "a", "at"):
                 seg.append(node.get("text") or node.get("href") or "")
@@ -662,21 +666,58 @@ def _flatten_post(content):
     return "\n".join(out).strip()
 
 
+def _card_texts(node, out, depth=0):
+    """把卡片里任意层级的文字都刨出来。
+
+    卡片元素形状不固定：div 带 text、note 带 elements、column_set 带 columns、
+    columns 里又是 elements……按字段硬猜一定会在某个真实卡片上炸（'list' object
+    has no attribute 'get'），所以这里只认「是不是 dict/list」再往下钻。
+    """
+    if depth > 8:
+        return
+    if isinstance(node, str):
+        if node.strip():
+            out.append(node.strip())
+        return
+    if isinstance(node, list):
+        for it in node:
+            _card_texts(it, out, depth + 1)
+        return
+    if not isinstance(node, dict):
+        return
+    txt = node.get("content")
+    if isinstance(txt, str) and txt.strip():
+        out.append(txt.strip())
+    for key in ("text", "header", "elements", "columns", "fields", "title", "items"):
+        if key not in node:
+            continue
+        val = node[key]
+        # 同一个键在两种卡片格式里含义不同：标准卡片 {"text":{"content":…}}，
+        # 简易卡片 {"tag":"text","text":"正文"} 直接就是字符串。
+        if isinstance(val, str):
+            if val.strip():
+                out.append(val.strip())
+        else:
+            _card_texts(val, out, depth + 1)
+
+
 def _flatten_card(content):
     """卡片消息 → 纯文本（就是机器人自己发过的那张结果卡）。"""
+    if not isinstance(content, dict):
+        return ""
     out = []
-    title = ((content.get("header") or {}).get("title") or {}).get("content") or ""
-    if title:
-        out.append(title)
-    for el in content.get("elements") or []:
-        txt = (el.get("text") or {}).get("content")
-        if txt:
-            out.append(txt)
-        for sub in el.get("elements") or []:
-            t2 = sub.get("content")
-            if t2:
-                out.append(t2)
-    return "\n".join(out).strip()
+    _card_texts(content.get("title"), out)
+    _card_texts(content.get("header"), out)
+    _card_texts(content.get("elements"), out)
+    # 去重但保序：header 里的标题常常和第一段重复
+    seen = set()
+    uniq = []
+    for t in out:
+        if t in seen:
+            continue
+        seen.add(t)
+        uniq.append(t)
+    return "\n".join(uniq).strip()
 
 
 def resolve_quote(chat_id, open_id, parent_id):
@@ -689,7 +730,8 @@ def resolve_quote(chat_id, open_id, parent_id):
     item, err = fetch_message(parent_id)
     if not item:
         log.info("取被引用消息失败 mid=%s err=%s", parent_id, err)
-        return "", None
+        # 取不到是谁发的，就当「在回别人的消息」——保守一点，别插嘴。
+        return "", None, UNKNOWN_SENDER
 
     mt = item.get("msg_type") or ""
     try:
@@ -697,6 +739,7 @@ def resolve_quote(chat_id, open_id, parent_id):
     except Exception:
         content = {}
     by_oid = ((item.get("sender") or {}).get("id")) or ""
+    parent_sender = by_oid
     by = who_name(by_oid) if by_oid else ""
     if by.startswith("…"):
         by = "别人"          # 还没记住名字，别把 open_id 尾巴露在提示里
@@ -708,16 +751,16 @@ def resolve_quote(chat_id, open_id, parent_id):
         if key:
             return ("【他引用了%s的一条图片消息，下面这张就是】\n\n【他这句话】" % who,
                     {"kind": "image", "rtype": "image", "key": key, "name": "",
-                     "_mid": parent_id})
-        return "【他引用了一条图片消息，但取不到图】\n\n【他这句话】", None
+                     "_mid": parent_id}, parent_sender)
+        return "【他引用了一条图片消息，但取不到图】\n\n【他这句话】", None, parent_sender
     if mt in ("file", "media", "audio"):
         key = content.get("file_key") or ""
         name = (content.get("file_name") or "").strip()
         if key:
             return ("【他引用了%s的一个文件，下面这个就是】\n\n【他这句话】" % who,
                     {"kind": "file", "rtype": "file", "key": key, "name": name,
-                     "_mid": parent_id})
-        return "【他引用了一个文件消息，但取不到文件】\n\n【他这句话】", None
+                     "_mid": parent_id}, parent_sender)
+        return "【他引用了一个文件消息，但取不到文件】\n\n【他这句话】", None, parent_sender
 
     if mt == "text":
         body = (content.get("text") or "").strip()
@@ -731,8 +774,8 @@ def resolve_quote(chat_id, open_id, parent_id):
         body = "[一条 %s 消息]" % mt
     body = body[:1200]
     if not body:
-        return "", None
-    return "【他引用了%s的这条消息】\n%s\n\n【他这句话】\n" % (who, body), None
+        return "", None, parent_sender
+    return "【他引用了%s的这条消息】\n%s\n\n【他这句话】\n" % (who, body), None, parent_sender
 
 
 # ─────────────────────────── agent 通道 ───────────────────────────
@@ -927,6 +970,8 @@ PROMPT_TMPL = (
     "你是「600 G2」的执行助手，正在通过飞书和 {who} 对话。工作目录 {cwd}。\n"
     "如果这句话信息不足，无法确定要做什么：整条回答只输出一行，以「CLARIFY: 」开头，"
     "后面接一个最可能的候选问句（例如：你是要重启 dsh-web 还是整机？），不要执行任何动作。\n"
+    "如果他明确让你停手、别管、不用你做（「你别乱搞」「这不是你要管的」「停下」「别弄了」）："
+    "只回一句「好，停了」，不辩解、不继续执行、不反问。\n"
     "如果信息足够：直接把事做完，最后给出简短结论（不超过 20 行）。\n"
     "调用工具时，description 字段用中文写、不超过 12 个字（它会显示在用户的进度卡上）。\n\n"
     "【交付文件】要交付 docx/pdf/图片/表格/压缩包这类文件时：\n"
@@ -936,15 +981,23 @@ PROMPT_TMPL = (
     "  3) 回复里只写「已发送：文件名（大小）」这样的结论。\n"
     "不要用工作区路径代替文件（用户拿不到），也不要把整篇内容粘贴出来代替文件。\n"
     "pushfile 支持多个文件：pushfile a.docx b.pdf \"作业打包\"。\n\n"
-    "【飞书能力】你还有一个飞书 MCP，工具名以 mcp__lark__ 开头：\n"
-    "  mcp__lark__im_v1_chat_list         列机器人所在的群\n"
-    "  mcp__lark__im_v1_chatMembers_get   读群成员（谁在群里、他们的 open_id）\n"
-    "  mcp__lark__im_v1_chat_create       建群\n"
-    "  mcp__lark__im_v1_message_create    往指定会话发消息/卡片\n"
-    "  mcp__lark__docx_v1_document_rawContent  读云文档纯文本\n"
-    "  mcp__lark__docx_builtin_import     把本地文件导入成飞书云文档\n"
-    "注意：MCP 没有上传文件的工具，要发本地文件一律用 pushfile；\n"
-    "     也读不了群历史消息（应用没这个权限），别去试。\n\n"
+    "【飞书能力】你有一个飞书 MCP，工具名以 mcp__feishu__ 开头（共 36 个）。常用的：\n"
+    "  feishu_recent            读最近消息（图片/文件消息也在里面）\n"
+    "  feishu_chats / members   列机器人所在的群 / 读群成员\n"
+    "  feishu_send_text / send_card / send_file / send_image / reply   往外发\n"
+    "  feishu_recall            撤回自己发的消息；删群里的旧文件也靠它（文件挂在消息上）\n"
+    "  feishu_chat_files        列群里的文件（飞书没有群文件列表接口，它是翻消息筛出来的，\n"
+    "                           返回 message_id，可以直接接着 feishu_recall 删）\n"
+    "  feishu_forward / pin     转发、置顶\n"
+    "  feishu_chat_update / create / dissolve   改群名和权限、建群、解散群\n"
+    "  feishu_file_delete       删云空间里的文件（参数是 file_token，不是消息的 file_key）\n"
+    "  feishu_bitable_*         多维表格：列表/字段/记录/新增/更新/删除\n"
+    "  feishu_sheet_create / read               电子表格：新建、按区间读值\n"
+    "  feishu_doc_read / doc_blocks / doc_create  文档：读正文、读分块结构、新建\n"
+    "  feishu_wiki_spaces / wiki_node           知识库\n"
+    "  feishu_user_lookup       邮箱/手机号查 open_id\n"
+    "不确定自己有没有某个能力时，先看工具清单再回答，别直接说「我没有接口」；\n"
+    "要发本地文件一律用 pushfile，MCP 传不了本地文件。\n\n"
     "【图片与文件】他发来的图片/文件已经落到工作目录里（默认 .feishu-inbox/ 下），"
     "消息里给的是相对路径。图片必须用 read_image 真的打开看（能看图，别凭文件名猜），"
     "文件用读写工具打开；原件保留，不要删。\n"
@@ -1055,6 +1108,17 @@ EFFORT_NOTE = {
 
 # 先禁用掉不再使用的模型：v4-pro 贵且默认不用，留着容易被误点。
 BLOCKED_MODELS = ("deepseek-v4-pro",)
+
+# 口语版「停手」。命中且句子很短时，不派给 agent——派下去它就会真的「处理」一遍，
+# 既插嘴又白烧一次额度。宁可少接一句，也不要乱做。
+STOP_WORDS = (
+    "别乱搞", "不要乱搞", "别弄了", "别做了", "不用做了", "别管了", "不用你管",
+    "这不是你要管的", "不是让你做", "没让你做", "停手", "停下",
+)
+
+# 引用了某条消息但查不出是谁发的（消息太老、被删、id 无效）时用这个哨兵，
+# 让「这句是在跟别人说话」的判定走保守分支。
+UNKNOWN_SENDER = "?"
 
 # 目录真源：agent 上那份 pi-ai 自带的模型清单。用 glob 兜住版本路径变化。
 _CATALOG_GLOB = (
@@ -2147,6 +2211,51 @@ def mentioned_bot(msg):
     return False
 
 
+def _mention_ids(msg):
+    """消息里被 @ 到的人（open_id 列表），取不到就算空。"""
+    out = []
+    for m in (getattr(msg, "mentions", None) or []):
+        oid = ""
+        try:
+            mid = getattr(m, "id", None)
+            if mid is not None:
+                oid = getattr(mid, "open_id", "") or ""
+        except Exception:
+            oid = ""
+        if not oid and isinstance(m, dict):
+            oid = ((m.get("id") or {}).get("open_id")) or ""
+        if oid:
+            out.append(oid)
+    return out
+
+
+def _is_me(sender_id):
+    """这条消息是不是机器人自己发的。
+
+    机器人发的消息 sender 是应用（cli_…），不是 open_id（ou_…），
+    所以两个都得认——否则「用户回复我的结果卡」会被当成「回复别人的消息」。
+    """
+    if not sender_id:
+        return False
+    return sender_id == BOT_OPEN_ID or (APP_ID and sender_id == APP_ID)
+
+
+def _chatter_reason(msg, parent_sender):
+    """群里这句是在跟别人说话，还是在使唤机器人？返回原因（空串=该接）。
+
+    免 @ 之后机器人会听到群里每一句话。两个人互相接话、@ 别人的话，
+    它插嘴只会碍事——只在「回它的话」「@ 它」「谁也没指向」这三种情况下才接。
+    """
+    if _is_me(parent_sender):
+        return ""                       # 在回我的消息，那是给我看的
+    if parent_sender:
+        return "回复的是别人的消息"
+    others = [o for o in _mention_ids(msg) if not _is_me(o)]
+    if others:
+        return "@的是别人"
+    return ""
+
+
 SEEN = {}          # message_id -> 首次处理时间戳，用于飞书重投去重
 SEEN_LOCK = threading.Lock()
 
@@ -2267,13 +2376,22 @@ def handle_inner(data: P2ImMessageReceiveV1):
         # 引用/回复某条消息：飞书事件只给 parent_id，内容得再查一次。
         # 不还原的话，「你重新做这个」里的「这个」模型根本看不见——它只会接着当前上下文瞎猜。
         quote_note = ""
+        parent_sender = ""
         pid = (getattr(msg, "parent_id", "") or "").strip()
         if pid and pid != (getattr(msg, "message_id", "") or ""):
-            quote_note, qatt = resolve_quote(chat_id, sender, pid)
+            quote_note, qatt, parent_sender = resolve_quote(chat_id, sender, pid)
             if qatt and not att:
                 att = qatt
             log.info("引用了 mid=%s 还原出 %d 字%s", pid, len(quote_note),
                      " + 附件" if qatt else "")
+
+        # 群里免 @ 之后能听到每一句话，但别人互相接话时不该插嘴。
+        # 判定：回的是我的消息 / @ 了我 / 谁也没指向 → 接；回复别人 / @ 别人 → 不接。
+        if chat_type in ("group", "topic") and not mentioned_bot(msg):
+            why = _chatter_reason(msg, parent_sender)
+            if why:
+                log.info("这句像是对别人说的（%s），不接", why)
+                return
 
         # 还没 @ 出文字（只 @ 了一下）→ 给提示。引用了东西也算有内容
         if not text and not att and not quote_note:
@@ -2376,6 +2494,17 @@ def handle_inner(data: P2ImMessageReceiveV1):
                 reply("已发中止信号。" + tail)
             else:
                 reply("现在没有在跑的任务。")
+            return
+
+        # 口语版「停手」：别把这类话当任务派下去——模型会真的去「处理」一遍，
+        # 结果就是插嘴 + 白跑一次。这里直接答一句，并且顺手停掉他名下在跑的任务。
+        if len(text) <= 30 and any(w in text for w in STOP_WORDS):
+            t = RUNNING.get(sender)
+            if t:
+                t.kill()
+                reply("好，停了。")
+            else:
+                reply("好。")
             return
 
         m = re.match(r"^(?:/批|批|/approve)\s*(\w+)$", text) or re.match(r"^(?:/拒|拒|/reject)\s*(\w+)$", text)
@@ -2614,7 +2743,9 @@ def handle_inner(data: P2ImMessageReceiveV1):
     except Exception as e:
         log.exception("handle error")
         try:
-            send(data.event.message.chat_id, "内部错误：%s" % e)
+            # 别把 Python 异常名甩给用户看：他看不懂，也不知道该做什么
+            send(data.event.message.chat_id,
+                 "⚠️ 这条我没接住（%s）。重发一次通常就好；一直这样就发 /状态 看看。" % type(e).__name__)
         except Exception:
             pass
 

@@ -92,6 +92,40 @@ function clampLimit(raw: number | undefined, fallback: number, max: number): num
   return n > max ? max : n;
 }
 
+/** 从文档块里尽量抽出可读文字。飞书块是 {block_id, block_type, text:{elements:[{text_run:{content}}]}, ...} */
+function extractBlockText(block: Record<string, unknown>): string {
+  const pick = (node: unknown): string => {
+    if (!node || typeof node !== 'object') return '';
+    const obj = node as Record<string, unknown>;
+    const out: string[] = [];
+    const elements = obj.elements;
+    if (Array.isArray(elements)) {
+      for (const el of elements) {
+        if (!el || typeof el !== 'object') continue;
+        const e = el as Record<string, unknown>;
+        for (const key of ['text_run', 'mention_doc', 'mention_user', 'equation']) {
+          const run = e[key];
+          if (run && typeof run === 'object') {
+            const content = (run as Record<string, unknown>).content;
+            if (typeof content === 'string') out.push(content);
+          }
+        }
+      }
+    }
+    return out.join('');
+  };
+
+  // 文本、标题、列表、待办、引用、代码块都挂在自己的键上
+  for (const key of Object.keys(block)) {
+    if (key === 'block_id' || key === 'block_type' || key === 'parent_id' || key === 'children') continue;
+    const value = block[key];
+    if (!value || typeof value !== 'object') continue;
+    const text = pick(value);
+    if (text) return text;
+  }
+  return '';
+}
+
 export function registerDocsTools(server: McpServer, ctx: ToolContext): void {
   // ───────────────────────── 云空间：文件列表 ─────────────────────────
 
@@ -507,6 +541,160 @@ export function registerDocsTools(server: McpServer, ctx: ToolContext): void {
             '查知识库节点',
             '需要在开放平台开通知识库权限（如 wiki:wiki 或 wiki:wiki:readonly），' +
               '并确认应用已被加入该知识库，然后重新发布版本。',
+          ),
+        );
+      }
+    },
+  );
+
+  // ───────────────────────── 电子表格：读单元格 ─────────────────────────
+
+  server.registerTool(
+    'feishu_sheet_read',
+    {
+      title: '读电子表格单元格',
+      description:
+        '按 A1 区间读一个电子表格的值，返回二维数组（行 × 列）。' +
+        '区间写法：Sheet1!A1:D20（带表名更稳），或 A1:D20（默认第一个工作表）。' +
+        '读整列可以用 Sheet1!A:A。' +
+        '只能读值和公式结果，读不到样式、批注、合并单元格信息。' +
+        '配合 feishu_sheet_create 新建表；写入目前没有开放（飞书的写入接口要求先拿到 sheet_id，' +
+        '需要先读一次拿元数据，暂未支持）。',
+      inputSchema: {
+        spreadsheet_token: z
+          .string()
+          .min(1)
+          .describe('电子表格的 token（sheet 链接里 /sheets/ 后面那串）'),
+        range: z
+          .string()
+          .min(1)
+          .describe('A1 区间，如 "Sheet1!A1:D20" 或 "A1:D20"；整列写 "Sheet1!A:A"'),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    },
+    async ({ spreadsheet_token, range }) => {
+      try {
+        const token = spreadsheet_token.trim();
+        const rng = range.trim();
+        const res = await ctx.client.readSheetValues(token, rng);
+        const rows = Array.isArray(res.values) ? res.values : [];
+        if (!rows.length) {
+          return ok(`区间 ${res.range || rng} 是空的（没有任何值）。`, {
+            spreadsheet_token: token,
+            range: res.range || rng,
+            rows: 0,
+          });
+        }
+
+        const lines = [
+          `区间 ${res.range || rng}：共 ${rows.length} 行`,
+          '',
+          ...rows.slice(0, 60).map((row, i) => {
+            const cells = (Array.isArray(row) ? row : []).map((c) =>
+              c === null || c === undefined ? '' : String(c),
+            );
+            return `${i + 1}｜${cells.join(' ｜ ')}`;
+          }),
+        ];
+        if (rows.length > 60) lines.push(`（只列了前 60 行，共 ${rows.length} 行）`);
+
+        return ok(lines.join('\n'), {
+          spreadsheet_token: token,
+          range: res.range || rng,
+          rows: rows.length,
+          values: rows.slice(0, 200),
+        });
+      } catch (err) {
+        return fail(
+          describeError(
+            err,
+            '读电子表格',
+            '需要在开放平台开通表格权限（如 sheets:spreadsheet:readonly 或 sheets:spreadsheet），' +
+              '并确认应用对该表格有访问权限（文档需要共享给应用或放在应用可访问的空间）。',
+          ),
+        );
+      }
+    },
+  );
+
+  // ───────────────────────── 文档：读结构化块 ─────────────────────────
+
+  server.registerTool(
+    'feishu_doc_blocks',
+    {
+      title: '读文档结构化块',
+      description:
+        '按块（block）读一篇云文档的结构：每块有 block_id、block_type 与内容。' +
+        '和 feishu_doc_read 的区别：doc_read 给的是拼接好的纯文本，适合通读；' +
+        'doc_blocks 保留段落/标题/表格/图片块的分块结构，适合定位「第几段」「哪个表格」' +
+        '以及后续按 block_id 做精细操作。' +
+        '飞书文档的块类型是数字编码（如 2=文本、3-11=各级标题、31=表格），' +
+        '本工具会把能识别的文字内容抽出来，识别不了的块只给类型码。',
+      inputSchema: {
+        document_id: z
+          .string()
+          .min(1)
+          .describe('文档 id（docx 链接里 /docx/ 后面那串，不是整个 URL）'),
+        page_size: z
+          .number()
+          .int()
+          .min(1)
+          .max(500)
+          .optional()
+          .describe('每页块数，默认 200，最大 500'),
+        max_pages: z
+          .number()
+          .int()
+          .min(1)
+          .max(10)
+          .optional()
+          .describe('最多翻几页，默认 3（防止超大文档一次拉爆）'),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    },
+    async ({ document_id, page_size, max_pages }) => {
+      try {
+        const docId = document_id.trim();
+        const size = page_size ?? 200;
+        const pages = max_pages ?? 3;
+
+        const items: Array<Record<string, unknown>> = [];
+        let pageToken: string | undefined;
+        let hasMore = false;
+        for (let i = 0; i < pages; i += 1) {
+          const res = await ctx.client.listDocumentBlocks(docId, {
+            pageSize: size,
+            pageToken,
+          });
+          items.push(...(res.items ?? []));
+          hasMore = res.hasMore;
+          pageToken = res.pageToken;
+          if (!hasMore || !pageToken) break;
+        }
+
+        if (!items.length) return ok(`文档 ${docId} 没有任何块（可能是空文档）。`, { blocks: 0 });
+
+        const lines = [`文档 ${docId}：共取到 ${items.length} 个块${hasMore ? '（还有更多页）' : ''}`, ''];
+        for (const b of items.slice(0, 120)) {
+          const type = Number(b.block_type ?? 0);
+          const text = extractBlockText(b);
+          lines.push(text ? `${type}｜${text}` : `${type}｜(无文字内容)`);
+        }
+        if (items.length > 120) lines.push(`（只列了前 120 块，共 ${items.length} 块）`);
+
+        return ok(lines.join('\n'), {
+          document_id: docId,
+          blocks: items.length,
+          has_more: hasMore,
+          items: items.slice(0, 200),
+        });
+      } catch (err) {
+        return fail(
+          describeError(
+            err,
+            '读文档块',
+            '需要在开放平台开通文档权限（如 docx:document:readonly 或 docx:document），' +
+              '并确认应用对该文档有访问权限。',
           ),
         );
       }

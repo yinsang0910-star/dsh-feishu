@@ -17,64 +17,69 @@
 
 ---
 
-飞书里的对话就是 agent 的操作台。你在手机上发一句话，它在你的机器上干活，
-把**文件**、**卡片**、**多维表格**直接发回群里 —— 而不是回你一堆「我建议你执行以下命令」。
+飞书会话就是 agent 的操作台。在手机上发一句话，它在你的机器上执行，并把**文件**、**卡片**、
+**多维表格**直接发回会话，而不是返回一串「建议你执行以下命令」。
 
-不需要公网 IP，不需要内网穿透，不需要域名和证书。
+不需要公网 IP、内网穿透、域名或证书：机器人走飞书长连接，只往外发起 WebSocket。
 
 ## 它能干什么
 
 | 你说 | 它做 |
 | --- | --- |
-| 把上周的纳米技术报告发我 | 在工作区找到 3 份 `.docx`，**真的传进群里** |
-| 建一张读书清单的多维表格 | 建表 → 建 4 个字段 → 写入第一条记录，回你链接 |
-| 跑一下这个季度的文献综述，做完汇报 | 排进队列，**进度写在同一张卡片上**，聊天里只留一个气泡 |
-| 清一下 `/home/agent/work/old` | 先弹一张审批卡，你点「批准」才执行 |
-| 我在高铁上，帮我看下服务器还活着吗 | 回你 CPU / 内存 / 磁盘 / 服务状态 |
-| 发一张试卷照片，说「帮我批改」 | 图**真的被打开看**（`read_image`），逐题对错给你 |
-| 换个最会想的模型，慢慢算 | `/模型` 点按钮换模型、`/思考` 换 `reasoningEffort`（含 `auto` 自动挡），**先真跑一次**确认可用才生效 |
-| 群里三个人同时发话 | 各跑各的（上限 3 个并行），同一个人的任务仍按顺序；回复都 **@ 到人**，群静音也看得见 |
-| 选中一张旧图说「你重新做这个」 | 先回去把那条消息捞出来，图**重新下载落盘**，模型真的再看一遍 |
+| 把上周的纳米技术报告发我 | 在工作区找到 3 份 `.docx`，上传并发送到会话 |
+| 建一张读书清单的多维表格 | 建表 → 建 4 个字段 → 写入第一条记录，返回链接 |
+| 跑一下这个季度的文献综述，做完汇报 | 排进队列，进度更新在同一张卡片上，聊天里只留一个气泡 |
+| 清一下 `/home/agent/work/old` | 先发审批卡，确认后才执行 |
+| 我在高铁上，帮我看下服务器还活着吗 | 返回 CPU / 内存 / 磁盘 / 服务状态 |
+| 发一张试卷照片，说「帮我批改」 | 图片经 `read_image` 真正打开，逐题给出对错 |
+| 换个最会想的模型，慢慢算 | `/模型` 按钮切换模型、`/思考` 切换 `reasoningEffort`（含 `auto`），切换前先真跑一次确认可用 |
+| 群里三个人同时发话 | 并行执行（默认上限 3 个），同一个人的任务仍按顺序；回复 @ 到人，群静音也能收到 |
+| 选中一张旧图说「你重新做这个」 | 先取回被引用的消息，图片重新下载落盘，模型再看一遍 |
 
-配套的机器人还管这些：白名单认领、每人一份独立会话记忆、任务队列、超时兜底、每日汇报、危险动作拦截；
-图片和文件消息也能收（[docs/BOT-ATTACHMENTS.md](docs/BOT-ATTACHMENTS.md)），
-群里**不用 @** 也能直接使唤（[docs/BOT-GROUP-MODE.md](docs/BOT-GROUP-MODE.md)）。
-多人同时用、回复 @ 到人、引用旧消息回溯，见 [docs/BOT-RUNTIME.md](docs/BOT-RUNTIME.md)；
-`/状态` 里能看到现在全局几路在跑。
-发 `/help` 回一张能点的卡片：换模型、换 `reasoningEffort`（含 `auto` 自动挡）、看状态、管项目、开关群里要不要 @
-——完整清单在 [docs/BOT-COMMANDS.md](docs/BOT-COMMANDS.md)。
+机器人本身还负责：白名单认领、每人一份独立会话记忆、任务队列、超时兜底、每日汇报、危险动作拦截。
+它也能接收图片和文件消息（[BOT-ATTACHMENTS.md](docs/BOT-ATTACHMENTS.md)），群里不 @ 也能直接使用
+（[BOT-GROUP-MODE.md](docs/BOT-GROUP-MODE.md)），多人并发与引用回溯见
+[BOT-RUNTIME.md](docs/BOT-RUNTIME.md)，`/状态` 可查看当前全局并发数。
+
+`/help` 返回一张可点击的卡片：切换模型、切换 `reasoningEffort`、查看状态、管理工作区、
+开关群内是否需要 @。完整指令见 [BOT-COMMANDS.md](docs/BOT-COMMANDS.md)。
 
 ## 为什么不是 `@larksuiteoapi/lark-mcp`
 
-官方 lark-mcp 做的是**广度**：把飞书 OpenAPI 按元数据摊给模型。它很好，但「把 IM 当 agent 界面」最要紧的四件事它没有：
+官方 lark-mcp 覆盖的是**广度**：把飞书 OpenAPI 按元数据整体暴露给模型。它的定位没问题，但
+「把 IM 当作 agent 界面」最要紧的四项能力它不具备：
 
 | 缺口 | lark-mcp | 本项目 |
 | --- | --- | --- |
-| **发本地文件** | 没有 `im.v1.file.create` 这条链，本地文件传不进会话 | `feishu_send_file` / `feishu_send_image`：路径 → 上传 → 发消息 |
-| **会话上下文** | 只有「列消息」的原始接口 | `feishu_recent`：拍平成 `[时间] 发送人：内容`，模型一眼能读 |
-| **阻塞式提问** | 标准 MCP 是请求-响应，没有「等人回答」 | `feishu_ask`：发带按钮的卡片，阻塞等到你点，把答案带回来 |
-| **卡片原地更新** | 只会发卡，不会改卡，进度只能刷屏 | `feishu_update_card`：聊天里只留一个气泡，反复刷新 |
+| **发送本地文件** | 没有 `im.v1.file.create` 这条链路，本地文件无法进入会话 | `feishu_send_file` / `feishu_send_image`：路径 → 上传 → 发消息 |
+| **会话上下文** | 只有「列消息」的原始接口 | `feishu_recent`：拍平成 `[时间] 发送人：内容`，模型可直接阅读 |
+| **阻塞式提问** | 标准 MCP 是请求-响应模型，没有「等待人回答」 | `feishu_ask`：发带按钮的卡片，阻塞直到点击，把答案带回 |
+| **卡片原地更新** | 只能发卡，不能改卡，进度只能刷屏 | `feishu_update_card`：聊天里只留一个气泡，反复刷新 |
 
-如果你的需求是「用脚本批量调飞书 OpenAPI」，用 lark-mcp 更省事；
-如果是「让 agent 像同事一样在飞书里干活」，缺的正是上面四块。
+需求是「用脚本批量调用飞书 OpenAPI」时，lark-mcp 更合适；需求是「让 agent 在飞书里像同事一样干活」时，
+缺的正是上面四项。
 
-## 装上
+## 安装
 
-**前置**：一个飞书自建应用（scope 见[权限](#权限)）、一台跑 DeepSeek Harness 的机器、Node 22+。
+**前置条件**：一个飞书自建应用（scope 见[权限](#权限)）、一台运行 DeepSeek Harness 的机器、Node 22+。
 
-### 方式一：在设置页里点（推荐）
+### 方式一：设置页向导（推荐）
 
-装好插件后，DSH 设置面板左栏会多一项 **「飞书连接」**，里面是四步向导（顶部一条 `1 建应用 → 2 填凭据 → 3 选会话 → 4 自检` 的步骤条，走完一步亮一个勾）：
+装好插件后，DSH 设置面板左栏会多出 **「飞书连接」** 一项，内含四步向导
+（顶部步骤条 `1 建应用 → 2 填凭据 → 3 选会话 → 4 自检`，完成一步点亮一项）：
 
-1. **建应用** —— 直达开放平台的链接 + 要开的 11 项权限清单，可一键复制
-2. **填凭据** —— App ID / Secret。点保存时**先校验再落盘**，凭据错不会写坏文件
-3. **选会话** —— 点「扫描我的会话」把机器人所在的群列出来点选，不用手抄 32 位 `oc_` 串
-4. **自检** —— 九项逐个真调接口：凭据文件、MCP 挂载、应用凭据、机器人身份、会话列表、目标会话、读聊天记录、上传文件、云空间。每项下面一行小字是它的证据（凭据文件末四位、token 剩余秒数、机器人应用名、会话名、`file_key` 前几位），九项全绿时底部提示「工具已经挂进 profile，重启 DSH 之后 `mcp__feishu__*` 就能用了」
+1. **建应用** —— 直达开放平台的链接，附需开通的 11 项权限清单，可一键复制
+2. **填凭据** —— App ID / Secret，保存时先校验再落盘，凭据错误不会写坏文件
+3. **选会话** —— 「扫描我的会话」列出机器人所在会话供选择，无需手抄 32 位 `oc_` 串
+4. **自检** —— 九项逐个真调接口：凭据文件、MCP 挂载、应用凭据、机器人身份、会话列表、
+   目标会话、读聊天记录、上传文件、云空间。每项下方一行小字是判定依据（凭据文件末四位、
+   token 剩余秒数、机器人应用名、会话名、`file_key` 前几位）。九项全绿时底部提示
+   「工具已经挂进 profile，重启 DSH 之后 `mcp__feishu__*` 就能用了」
 
-失败项会直接给出该开通的 scope 和跳转链接，还能「一次开通全部缺的权限」。
-自检全程不往聊天里发任何东西：读历史只读 1 条，上传只传 20 字节且不发送。
+失败项会给出该开通的 scope 与跳转链接，并支持「一次开通全部缺失权限」。
+自检全程不往会话里发任何内容：读历史只读 1 条，上传只传 20 字节且不发送。
 
-### 方式二：一条命令
+### 方式二：命令行安装
 
 ```bash
 pnpm install && pnpm build
@@ -85,33 +90,39 @@ node scripts/install.mjs \
   --chat-id oc_xxxxxxxx
 ```
 
-安装器会做四件事，每一步都可单独重跑：
+安装器执行四步，每一步都可单独重跑：
 
-1. **校验凭据** —— 真去换一次 `tenant_access_token` 并列会话，凭据错当场就报
+1. **校验凭据** —— 实际换取一次 `tenant_access_token` 并列出会话，凭据错误立即报出
 2. **写密钥文件** —— `~/.config/dsh/feishu.env`，权限 `0600`
-3. **装 MCP 启动包装** —— 一个 `dsh-feishu-mcp` 小脚本（stdio 子进程会被清空环境变量，密钥得由包装自己 source）
-4. **改 profile** —— 幂等地往 `cordis.patch.yml` 写一段带哨兵的托管块
+3. **安装 MCP 启动包装** —— 生成 `dsh-feishu-mcp` 小脚本（stdio 子进程的环境变量会被清空，
+   密钥需由包装脚本自行 source）
+4. **修改 profile** —— 幂等地向 `cordis.patch.yml` 写入一段带哨兵的托管块
 
-然后重启 DSH，让模型报一下工具：
+之后重启 DSH，让模型报告工具清单：
 
 ```bash
 echo '你有哪些 mcp__feishu__ 工具？只列名字' | dsh --profile headless --json -
 ```
 
-`--uninstall` 只回滚第 3、4 步，不动你的密钥文件。可选 `--profile <名字>`（默认 `headless`）、`--dir <安装目录>`、`--skip-check`。
+`--uninstall` 只回滚第 3、4 步，不改动密钥文件。可选参数：`--profile <名字>`（默认 `headless`）、
+`--dir <安装目录>`、`--skip-check`。
 
-**扫码就能建应用**：第 2 步的「扫码创建」用的是飞书官方的 [RFC 8628 设备授权流程](https://accounts.feishu.cn/oauth/v1/app/registration)。二维码里是 `open.feishu.cn/page/launcher?user_code=...`，手机上确认之后应用自动建好、App ID 与 Secret 直接写进本机 `feishu.env`——浏览器全程拿不到 secret，你也不用手抄任何一串。
+**扫码建应用**：第 2 步的「扫码创建」使用飞书官方
+[RFC 8628 设备授权流程](https://accounts.feishu.cn/oauth/v1/app/registration)。
+二维码内容是 `open.feishu.cn/page/launcher?user_code=...`，手机确认后应用自动创建，
+App ID 与 Secret 直接写入本机 `feishu.env`——浏览器全程不接触 secret，也无需手抄任何一串。
 
-**仍然要手动的是权限**：应用建好后按第 1 步那份清单勾选（有深链和一键复制）。飞书没有让第三方代开权限的通道，这一步省不掉。
+**权限仍需手动开通**：应用创建后按第 1 步的清单勾选（提供深链与一键复制）。
+飞书没有允许第三方代开权限的通道，这一步无法省略。
 
 <details>
-<summary>只想挂 MCP，不要机器人</summary>
+<summary>只挂 MCP，不要机器人</summary>
 
-MCP server 已打成**自包含单文件**（SDK 和 core 都打进去了），不用 `pnpm install`，也不从 npm 装。
+MCP server 已打成**自包含单文件**（SDK 与 core 都打包在内），不需要 `pnpm install`，也不从 npm 安装。
 
 **Claude Desktop**：从 [Releases](https://github.com/yinsang0910-star/dsh-feishu/releases/latest) 下载
-`dsh-feishu-mcp-<版本>.mcpb`，双击安装，在配置面板填 App ID 与 App Secret。
-（同一个产物也在 MCP 独立仓库 [dsh-feishu-mcp](https://github.com/yinsang0910-star/dsh-feishu-mcp) 的 Releases 里。）
+`dsh-feishu-mcp-<版本>.mcpb`，双击安装，在配置面板填入 App ID 与 App Secret。
+（同一产物也在 MCP 独立仓库 [dsh-feishu-mcp](https://github.com/yinsang0910-star/dsh-feishu-mcp) 的 Releases 中。）
 
 **其他 stdio 客户端**：
 
@@ -119,10 +130,10 @@ MCP server 已打成**自包含单文件**（SDK 和 core 都打进去了），�
 npx github:yinsang0910-star/dsh-feishu-mcp
 ```
 
-或者直接从 [Releases](https://github.com/yinsang0910-star/dsh-feishu/releases/latest) 下
-`dsh-feishu-mcp-<版本>.mjs` 单文件，`node dsh-feishu-mcp.mjs` 就能跑（1.5 MB，含全部依赖）。
+或从 [Releases](https://github.com/yinsang0910-star/dsh-feishu/releases/latest) 下载
+`dsh-feishu-mcp-<版本>.mjs` 单文件，`node dsh-feishu-mcp.mjs` 即可运行（1.5 MB，含全部依赖）。
 
-给它 `FEISHU_APP_ID` / `FEISHU_APP_SECRET` 就能跑。挂进 DSH 的办法是编辑
+提供 `FEISHU_APP_ID` / `FEISHU_APP_SECRET` 即可运行。挂进 DSH 的方式是编辑
 `~/.dsh/profiles/<profile>/cordis.patch.yml`：
 
 ```yaml
@@ -142,17 +153,17 @@ npx github:yinsang0910-star/dsh-feishu-mcp
           FEISHU_DEFAULT_CHAT_ID: 'oc_xxx'
 ```
 
-注意 `serverName: feishu` 决定工具前缀（`mcp__feishu__*`），改了前缀也就变了。
+注意 `serverName: feishu` 决定工具前缀（`mcp__feishu__*`），改动它前缀随之改变。
 
-改代码时改成跑本仓库的产物：`command: node` + `args: ['/绝对路径/packages/mcp/dist/server.js']`。
+改代码时改为运行本仓库产物：`command: node` + `args: ['/绝对路径/packages/mcp/dist/server.js']`。
 
-打包产物另有一个仓库：[yinsang0910-star/dsh-feishu-mcp](https://github.com/yinsang0910-star/dsh-feishu-mcp)
-（由 `scripts/publish-mcp-repo.ps1` 单向同步，请勿在那里直接改代码）。
+打包产物另有独立仓库：[yinsang0910-star/dsh-feishu-mcp](https://github.com/yinsang0910-star/dsh-feishu-mcp)
+（由 `scripts/publish-mcp-repo.ps1` 单向同步，请勿在该仓库直接改代码）。
 </details>
 
-## 25 个工具
+## 36 个工具
 
-工具名在客户端里带前缀，形如 `mcp__feishu__feishu_send_text`。参数细节见 [docs/TOOL-CONTRACT.md](docs/TOOL-CONTRACT.md)。
+工具名在客户端里带前缀，形如 `mcp__feishu__feishu_send_text`。参数细节见 [docs/TOOL-CONTRACT.md](docs/TOOL-CONTRACT.md)，逐个工具的说明见 [docs/MCP-TOOLS.md](docs/MCP-TOOLS.md)。
 
 | 分组 | 工具 |
 | --- | --- |
@@ -161,15 +172,18 @@ npx github:yinsang0910-star/dsh-feishu-mcp
 | **文件** | `feishu_send_file` 本地文件（30MB，可批量 + 说明文字）· `feishu_send_image` 图片（10MB）· `feishu_download` 把消息附件落到本地 |
 | **上下文** | `feishu_recent` 读最近消息（时间正序、默认滤掉机器人自己）· `feishu_ask` 发问并等人回答 |
 | **通讯录** | `feishu_chats` 列机器人所在会话 · `feishu_members` 列成员 |
-| **多维表格** | `feishu_bitable_tables` · `feishu_bitable_fields`（带类型码与写入形态）· `feishu_bitable_records`（单元格渲染成人话）· `feishu_bitable_add` · `feishu_bitable_update` · `feishu_sheet_create` |
-| **文档 / 云空间 / 知识库** | `feishu_drive_list` · `feishu_doc_read` · `feishu_doc_create` · `feishu_wiki_spaces` · `feishu_wiki_node` · `feishu_user_lookup` |
+| **群与消息管理** | `feishu_recall` 撤回消息（**删群里的旧文件也走它**）· `feishu_forward` 转发 · `feishu_pin` 置顶 · `feishu_chat_update` 改群名与权限 · `feishu_chat_create` 建群 · `feishu_chat_dissolve` 解散群 · `feishu_chat_files` 列群文件 · `feishu_file_delete` 删云空间文件 |
+| **多维表格** | `feishu_bitable_tables` · `feishu_bitable_fields`（带类型码与写入形态）· `feishu_bitable_records`（单元格渲染成人话）· `feishu_bitable_add` · `feishu_bitable_update` · `feishu_bitable_delete` |
+| **表格 / 文档 / 云空间 / 知识库** | `feishu_sheet_create` · `feishu_sheet_read`（按 A1 区间读值）· `feishu_drive_list` · `feishu_doc_read` · `feishu_doc_blocks`（按块读结构）· `feishu_doc_create` · `feishu_wiki_spaces` · `feishu_wiki_node` · `feishu_user_lookup` |
 
-另有卡片模板（`progressCard` / `resultCard` / `askCard` / `chatListCard`）和统一的错误翻译：
-scope 没开时 `FeishuApiError.missingScopes` 会把该开哪几项直接拼进错误文本，模型能照着提示你。
+飞书没有「群文件列表」这个端点：群里的文件是挂在消息上的附件，`feishu_chat_files` 的实现是翻最近的群消息再筛出 `file` / `media` / `audio` 类型。删除同理——删的是那条消息，所以走 `feishu_recall`。
+
+另有卡片模板（`progressCard` / `resultCard` / `askCard` / `chatListCard`）与统一错误翻译：
+scope 未开通时，`FeishuApiError.missingScopes` 会把需要开通的项拼进错误文本，模型可据此提示。
 
 ## 权限
 
-飞书开放平台 →「权限管理」开这些 scope，改完**要发版本**才生效：
+在飞书开放平台「权限管理」开通以下 scope，修改后**需要发布版本**才生效：
 
 | scope | 用于 |
 | --- | --- |
@@ -184,51 +198,53 @@ scope 没开时 `FeishuApiError.missingScopes` 会把该开哪几项直接拼进
 | `bitable:app` | 多维表格 |
 | `contact:user.id:readonly` | 邮箱 / 手机 → open_id |
 
-两件不在 scope 里的事：
+两项不属于 scope 配置：
 
-- 机器人得**先被拉进群**，`feishu_chats` 只列它已经加入的会话。
-- 卡片要能原地更新，发卡时就必须带 `config.update_multi = true` —— 本项目自带模板默认都带。
+- 机器人必须**先被拉进群**，`feishu_chats` 只列它已加入的会话。
+- 卡片要支持原地更新，发卡时必须带 `config.update_multi = true`（本项目自带模板默认已带）。
 
 ## 架构
 
 ![架构](docs/assets/architecture.svg)
 
-三个角色，各管一段：
+三个角色，职责分离：
 
-- **`feishu-bot`**（`services/feishu-bot`）— 跑在能长连接的地方。管认人、会话、队列、进度卡、审批按钮。它自己**不干活**。
-- **agent** — 真正执行的地方。`dsh --profile headless` 调模型，25 个 MCP 工具就是它的手。
-- **`gateway`**（`packages/gateway`）— 常驻小服务（默认 `:18642`），只干一件事：把卡片按钮的点击**精确投递给正在等回答的那次 `feishu_ask`**。以 `NO_WS=1` 运行，不碰长连接，避免和机器人抢事件。
+- **`feishu-bot`**（`services/feishu-bot`）—— 运行在可维持长连接的机器上，负责身份校验、会话管理、
+  任务队列、进度卡与审批按钮，自身不执行任务。
+- **agent** —— 实际执行方。`dsh --profile headless` 调用模型，36 个 MCP 工具是它的操作面。
+- **`gateway`**（`packages/gateway`）—— 常驻小服务（默认 `:18642`），只做一件事：把卡片按钮的点击
+  精确投递给正在等待回答的那次 `feishu_ask`。以 `NO_WS=1` 运行，不占用长连接，避免与机器人争抢事件。
 
 ```
 packages/
 ├── core/          @yisang0910/core      API 客户端 · 类型 · 卡片模板（零第三方 HTTP 依赖）
-├── mcp/           @yisang0910/mcp       25 个工具的 MCP server
+├── mcp/           @yisang0910/mcp       36 个工具的 MCP server
 ├── gateway/       @yisang0910/gateway   卡片问答网关（HTTP + 可选长连接）
-└── dsh-plugin/    @yisang0910/plugin DSH 设置页（在 Web UI 里填凭据、测连接）
+└── dsh-plugin/    @yisang0910/plugin    DSH 设置页（在 Web UI 里填凭据、测连接）
 services/
-├── feishu-bot/    飞书长连接机器人 + 一键部署脚本
-└── agent-workspace/  工作区清理器（按「能否一条命令重建」分级清理）
-docs/             TOOL-CONTRACT · ARCHITECTURE · DEPLOY · GATEWAY · BOT-INTEGRATION · AGENT-WORKSPACE
+├── feishu-bot/        飞书长连接机器人 + 一键部署脚本
+└── agent-workspace/   工作区清理器（按「能否一条命令重建」分级清理）
+docs/             TOOL-CONTRACT · MCP-TOOLS · ARCHITECTURE · DEPLOY · GATEWAY · BOT-*
 ```
 
-**改代码前请记住两条硬约束**：
+**改动代码前请遵守两条硬约束**：
 
-1. **stdout 只能出 MCP 的 JSON-RPC**。任何 `console.log` 都会破坏协议，日志一律走 stderr。
-2. **工具 handler 整体 try/catch**，异常必须翻译成 `fail(...)` 返回，不许往上抛。
+1. **stdout 只能输出 MCP 的 JSON-RPC**。任何 `console.log` 都会破坏协议，日志一律走 stderr。
+2. **工具 handler 必须整体 try/catch**，异常翻译成 `fail(...)` 返回，不得向上抛出。
 
 ## 状态
 
 版本 `0.1.0`（[Release v0.1.0](https://github.com/yinsang0910-star/dsh-feishu/releases/tag/v0.1.0)），
-**实验阶段**：接口和工具名还会变，暂不保证向后兼容。
+**实验阶段**：接口与工具名仍可能变化，暂不保证向后兼容。
 
-- 194 个单测（core 117 + gateway 77），CI 跑 typecheck + test + build + 打包冒烟
-- **下载**：Release 里挂了 `dsh-feishu-mcp-0.1.0.mcpb`（Claude Desktop 双击装）和
-  `dsh-feishu-mcp-0.1.0.mjs`（自包含单文件，`node` 直接跑），附 `SHA256SUMS.txt`
-- **npm 上暂时没有**：npm 的 2FA 政策把首次发布卡住了，原因与出路见
-  [docs/NPM-PUBLISH.md](docs/NPM-PUBLISH.md)。插件与 MCP 都能直接从 GitHub 装
+- 194 个单测（core 117 + gateway 77），CI 执行 typecheck + test + build + 打包冒烟
+- **下载**：Release 提供 `dsh-feishu-mcp-0.1.0.mcpb`（Claude Desktop 双击安装）与
+  `dsh-feishu-mcp-0.1.0.mjs`（自包含单文件，`node` 直接运行），附 `SHA256SUMS.txt`
+- **暂未发布到 npm**：npm 的 2FA 政策阻塞了首次发布，原因与出路见
+  [NPM-PUBLISH.md](docs/NPM-PUBLISH.md)。插件与 MCP 均可直接从 GitHub 安装
   （`dsh plugin … add github:…` / `npx github:…`），不依赖 npm
-- 已知限制：`feishu_ask` 轮询有延迟与配额成本、单文件 30MB 上限、没有多实例锁
-  —— 详见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- 已知限制：`feishu_ask` 轮询存在延迟与配额成本、单文件上限 30 MB、无多实例锁
+  —— 详见 [ARCHITECTURE.md](docs/ARCHITECTURE.md)
 
 ## 文档
 
