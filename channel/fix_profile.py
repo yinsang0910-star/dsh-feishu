@@ -13,7 +13,7 @@ import shutil
 PROFILE = "/home/agent/.dsh/profiles/web"
 PKG = PROFILE + "/package.json"
 PATCH = PROFILE + "/cordis.patch.yml"
-TGZ = "file:local-packages/dsh-feishu-channel-0.1.7.tgz"
+TGZ = "file:local-packages/dsh-feishu-channel-0.1.8.tgz"
 
 # ── 1. package.json：依赖指向 0.1.6 ──
 with open(PKG, encoding="utf-8") as f:

@@ -307,12 +307,16 @@ export function apply(ctx, config = {}) {
   // 所以先塞进 binding.pendingReplies，新订阅者连上时补发。
   const MAX_PENDING_REPLIES = 20;
 
-  function pushReply(binding, text) {
+  function pushReply(binding, text, reasoning) {
     const frame = {
       key: binding.key,
       sessionId: binding.sessionId,
       chatId: binding.chatId || '',
       text,
+      // 思考过程与深度：飞书那边做成折叠区，不占正文空间
+      reasoning: reasoning || '',
+      effort: cfg.reasoningEffort || 'auto',
+      turn: binding.turn || 0,
       at: Date.now(),
     };
     const payload = `event: reply\ndata: ${JSON.stringify(frame)}\n\n`;
@@ -344,6 +348,20 @@ export function apply(ctx, config = {}) {
       }
     }
     if (pending.length) ctx.logger?.info?.(`[feishu] 补发暂存回答 ${pending.length} 条`);
+  }
+
+  // 思考过程：ReasoningBlock = { type: 'reasoning', text }（dsh-llm/types.d.ts:51）
+  // 只截尾部 2000 字 —— 思考常常几千字，全塞进飞书会把消息撑爆；
+  // 尾部保留是因为结论性的判断一般在最后。
+  function reasoningOfMessage(message) {
+    const parts = (message?.content || [])
+      .filter((b) => b && b.type === 'reasoning' && typeof b.text === 'string')
+      .map((b) => b.text.trim())
+      .filter(Boolean);
+    if (parts.length === 0) return '';
+    const all = parts.join('\n').trim();
+    const MAX = 2000;
+    return all.length > MAX ? '…（前面略）\n' + all.slice(-MAX) : all;
   }
 
   function textOfMessage(message) {
@@ -411,7 +429,10 @@ export function apply(ctx, config = {}) {
     if (!b) return;
     if (!event || event.type !== 'assistant/message') return;
     const text = textOfMessage(event.data?.message);
-    if (!text) return; // 纯工具调用的消息没有正文，不发
+    const reasoning = reasoningOfMessage(event.data?.message);
+    // 只有思考没有正文（纯工具调用的那一轮）就不发，避免刷屏；
+    // 正文和思考都有时才把思考一并带上。
+    if (!text) return;
     const msgId = event.data?.message?.id;
     // 同一条消息可能因为投影刷新被重复投递，按 message id 去重
     if (msgId && b.sentMessageIds.has(msgId)) return;
@@ -419,7 +440,7 @@ export function apply(ctx, config = {}) {
     if (b.sentMessageIds.size > 200) {
       b.sentMessageIds = new Set([...b.sentMessageIds].slice(-100));
     }
-    pushReply(b, text);
+    pushReply(b, text, reasoning);
     schedulePush(b, true); // 顺带把卡片刷成最新状态（可能是空闲）
   }, GLOBAL);
 

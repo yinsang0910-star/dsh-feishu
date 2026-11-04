@@ -2,7 +2,7 @@
 
 把飞书接成 DSH 的**通道**，而不是给机器人加一个队列。
 
-当前版本 **0.1.7**，变更明细见 [CHANGELOG.md](CHANGELOG.md)。
+当前版本 **0.1.8**，变更明细见 [CHANGELOG.md](CHANGELOG.md)。
 
 ```
 飞书群/话题
@@ -73,10 +73,10 @@ profile 是 `~/.dsh/profiles/web`，dsh 版本 `0.2.1-rc.5`，node `v22.23.4`。
 ```powershell
 # 笔记本上
 cd dsh-feishu-channel
-npm pack                    # → dsh-feishu-channel-0.1.7.tgz
+npm pack                    # → dsh-feishu-channel-0.1.8.tgz
 
 $env:MSYS_NO_PATHCONV=1
-cmd /c "ssh -o BatchMode=yes agent ""cat > /home/agent/.dsh/profiles/web/local-packages/dsh-feishu-channel-0.1.7.tgz"" < ""dsh-feishu-channel-0.1.7.tgz"""
+cmd /c "ssh -o BatchMode=yes agent ""cat > /home/agent/.dsh/profiles/web/local-packages/dsh-feishu-channel-0.1.8.tgz"" < ""dsh-feishu-channel-0.1.8.tgz"""
 # 传完两边 md5sum 对一下
 ```
 
@@ -192,6 +192,19 @@ ssh pve 'cd /tmp && python3 e2e3.py'
 
 ### 7. 出站通道（回答怎么回到群里）
 
+0.1.8 起回答是**结构化卡片**，不是纯文本：
+
+```
+┌─ 回答 ───────── 第 0 轮 · 思考深度 high ─┐
+│ 亲核加成是指：带孤对电子或负电荷的亲核试剂…      │   ← lark_md，**加粗** 真的会变粗
+├──────────────────────────────────┤
+│ 思考过程（尾部，过长会截断）                  │   ← note，模型 reasoning 块尾部 2000 字
+│ 用户问：用两句话说明什么是亲核加成。这是一个…     │
+└──────────────────────────────────┘
+```
+
+正文超过 3000 字仍降级成 txt 附件（卡片有 30 KB 上限）；发卡片失败会回落纯文本，不会丢回答。
+
 `assistant/message` → SSE `event: reply` → 群里一条文本。三个要点：
 
 - **只发通道自己建的会话**：`bySession.get(session.id)` 查不到就跳过，所以 subagent / mnemon
@@ -248,6 +261,7 @@ curl -sN http://127.0.0.1:8788/events?key=lark:default:oc_reply_selftest
 | 消息重复执行 | outbox 幂等键是 `chatId:msgId`，飞书重投会被挡掉，日志里 `dup=True` |
 | 换通道后记忆像丢了 | 看日志有没有 `接续老会话`；没有说明 `state.json` 里那人的 session 已经不在了，会开新会话 |
 | **只有卡片、没有回答** | 0.1.6 及以前没有出站通道。升到 0.1.7，确认 `GET /events` 能收到 `event: reply`；收不到就查插件日志有没有 `session/event` 订阅报错 |
+| **回答是一大坨纯文本，`**加粗**` 不渲染、也没有思考过程** | 0.1.7 走 `deliver()` 发 `msg_type=text`，飞书纯文本不认 markdown，`reasoning` 块也被 `textOfMessage()` 过滤掉了（0.1.8 修的）。现在发 `lark_md` 卡片，标题栏带「思考深度」，正文下方 `note` 带思考尾部 2000 字 |
 | **收下了但立刻变 idle，`error` 里有 `has no provider/model`** | resume 路径漏了 `agentOptions`（0.1.5 及以前）。老会话 `resume` 时不继承 `create` 的参数，必须显式传，否则消息石沉大海 |
 | **它能说话但不会干活**（不能看图、不能跑命令、反过来教你自己去 `ls`） | 工具集没装配。`meta.agentPreset` 只是记录字段，必须在 `setup` 里 `ctx.agentPresets.mount(agentCtx, 'standard')`；resume 路径补 `select`（0.1.5 修的）。诊断：问它「你有哪些工具」，正常应该有 70 个以上 |
 | **20 条并发只有 6 条成功**，报 `session "..." already exists` | 并发建会话没加锁（0.1.4 修的）。新开话题第一条就发图、或 dsh-web 刚重启时最容易触发 |
@@ -258,7 +272,7 @@ curl -sN http://127.0.0.1:8788/events?key=lark:default:oc_reply_selftest
 dsh-feishu-channel/
 ├─ package.json          # dsh.bundle.patch 指向 cordis.patch.yml；files 白名单防打包带 tgz
 ├─ cordis.patch.yml      # 注册行（port / token / workspaceRoot / stateDir / provider / model）
-├─ CHANGELOG.md          # 0.1.0 → 0.1.7 逐条「症状 → 根因 → 修法」
+├─ CHANGELOG.md          # 0.1.0 → 0.1.8 逐条「症状 → 根因 → 修法」
 ├─ 方案-DSH原生通道重构.md  # 设计文档：三通道对比、inbox 语义、业界对照
 ├─ lib/
 │  ├─ index.js           # 插件主体：HTTP + SSE + ensureAgent(单飞) + preset mount + ingest + control + reply

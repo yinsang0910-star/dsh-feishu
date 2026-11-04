@@ -2,6 +2,48 @@
 
 每条都写清「症状 → 根因 → 修法」，因为这里每一个坑都是线上踩出来的，不是设想出来的。
 
+## 0.1.8 — 2026-11-04
+
+### 修复：回答排成一大坨纯文本，且把思考过程整个丢了
+
+**症状**：用户说「你这个卡片和消息框字体什么的都做了负优化，之前弄得挺好的现在这个看起来就很乱，然后也不显示自动思考的深度也不显示思考的过程了」。
+
+具体是两件事：
+
+1. 0.1.7 的回答走 `deliver()` → `send(chat_id, text)`，`msg_type="text"`。飞书**纯文本消息不渲染 markdown**，`**加粗**`、`# 标题`、`- 列表` 全都变成字面字符，长回答就是一大坨灰底文本。而旁边的状态卡是 `renderView()` 产出的结构化卡片（`wide_screen_mode` + `lark_md`），两者视觉完全不在一个体系里。
+2. `textOfMessage()` 只过滤 `b.type === 'text'`，`type === 'reasoning'` 的块被**整个丢掉**。DSH 的模型（deepseek-v4.1-flash，`reasoningEffort: high`）每轮都会产出思考内容，会话日志里 `grep -c reasoning` 能到几百处，但通道一个字都没往外送。
+
+**根因**：0.1.7 只解决了「话有没有送出去」，没管「送出去长什么样」。`ReasoningBlock`（`dsh-llm/lib/types/types.d.ts:51`）是 `{ type: 'reasoning'; text: string }`，和 text 块并列在 `content` 数组里，取的时候必须显式认。
+
+**修法**：
+
+插件侧（`lib/index.js`）：
+
+1. 新增 `reasoningOfMessage(message)`，拼所有 `reasoning` 块。**只保留尾部 2000 字**（前面加 `…（前面略）`）—— 思考常几千字，全塞进卡片会超飞书 30 KB 上限，而结论性判断一般在最后。
+2. `event: reply` 帧加三个字段：`reasoning`、`effort`（取 `cfg.reasoningEffort`）、`turn`。
+3. 仍然只在 `text` 非空时发帧 —— 纯工具调用轮次（只有 tool-call 没有正文）不发，避免群里刷屏。
+
+宿主侧（`bot.py`）：
+
+4. 新增 `build_reply_card(text, reasoning, effort, turn, open_id)`：`wide_screen_mode` 卡片，header 标题「回答」+ subtitle「第 N 轮 · 思考深度 high」，正文放 `lark_md` div（markdown 正常渲染），下面 `hr` 分隔，`note` 元素里放思考过程。
+5. 正文超过 3000 字仍走 `deliver()`（贴 txt），否则发卡片；**发卡片失败回落纯文本，绝不丢回答**。
+
+**实测**：
+
+```
+帧统计: Counter({'view': 7, 'reply': 1})
+reply 字段: ['at', 'chatId', 'effort', 'key', 'reasoning', 'sessionId', 'text', 'turn']
+  effort    : high
+  turn      : 0
+  text      : 亲核加成是指：带孤对电子或负电荷的亲核试剂主动进攻底物中电子云密度低的不饱和原子…
+  reasoning : 用户问：用两句话说明什么是亲核加成。这是一个简单的化学概念解释题。直接回答两句话即可。…
+  r 长度    : 336
+```
+
+**顺带修的一处配置坑**：profile 的 `cordis.patch.yml` 里 `inject` 只写了 `agents`，会**覆盖** bundle 自带的 `[agents, agentPresets]` —— 少了 `agentPresets` 就调不到 `ctx.agentPresets.mount()`，会话装配不出工具集（0.1.5 修的那个「空壳 agent」会以另一种形式回来）。已补成两项。
+
+---
+
 ## 0.1.7 — 2026-11-04
 
 ### 新增：出站通道（agent 的回答终于回到飞书了）
