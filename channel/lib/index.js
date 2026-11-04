@@ -34,6 +34,94 @@ export const inject = ['agents', 'agentPresets'];
 
 /** 卡片刷新硬下限：飞书卡片 PATCH 有频次限制，比这更密只会被限流 */
 const MIN_FLUSH_MS = 500;
+/** 卡片上最多留几条流水（再往前折叠成「前面还有 N 步」） */
+const MAX_STEPS = 8;
+
+/** 工具名 → 中文动词。没收录的回落成「调用 <name>」。 */
+const TOOL_VERB = {
+  read_image: '读取图片',
+  read: '读取',
+  write: '写入',
+  edit: '编辑',
+  glob: '查找文件',
+  grep: '搜索内容',
+  bash: '运行命令',
+  pwsh: '运行命令',
+  todo_write: '更新清单',
+  web_search: '搜索网页',
+  web_fetch: '读取网页',
+  skill: '加载技能',
+  subagent: '派子任务',
+  ask_user_question: '询问用户',
+};
+
+function verbOf(name) {
+  return TOOL_VERB[name] || ('调用 ' + name);
+}
+
+/** 从原始 arguments 字符串里挑一个最能说明「在干什么」的字段，截断。 */
+function relativeHint(p, cwd) {
+  const path = String(p || '');
+  const base = String(cwd || '').replace(/\/+$/, '');
+  if (base && path.startsWith(base + '/')) return path.slice(base.length + 1);
+  return path;
+}
+
+function hintOf(name, argsJson, cwd) {
+  let a = {};
+  try {
+    a = JSON.parse(argsJson || '{}') || {};
+  } catch {
+    a = {};
+  }
+  // 命令类优先 description（模型自己写的一句话），比整条 command 好读
+  const order =
+    name === 'bash' || name === 'pwsh'
+      ? ['description', 'command']
+      : ['file_path', 'path', 'pattern', 'query', 'url', 'description', 'command', 'text'];
+  let v = '';
+  for (const k of order) {
+    if (typeof a[k] === 'string' && a[k].trim()) {
+      v = a[k].trim();
+      break;
+    }
+  }
+  if (!v) {
+    // 兜底：第一个字符串型参数
+    for (const k of Object.keys(a)) {
+      if (typeof a[k] === 'string' && a[k].trim()) {
+        v = a[k].trim();
+        break;
+      }
+    }
+  }
+  v = v.replace(/\s+/g, ' ');
+  // 文件路径换成相对 cwd 的写法，否则「写入 · /home/agent/work/xxx」又长又没重点
+  if (name === 'read' || name === 'write' || name === 'edit' || name === 'read_image' || name === 'glob') {
+    v = relativeHint(v, cwd);
+  }
+  return v.length > 72 ? v.slice(0, 72) + '…' : v;
+}
+
+/** 压一条流水进去。kind: 'tool' | 'think' */
+function pushStep(binding, step) {
+  const arr = binding.steps || (binding.steps = []);
+  arr.push({ at: Date.now(), ok: null, ...step });
+  if (arr.length > 40) arr.splice(0, arr.length - 40);
+}
+
+/** tool/result 回来时，把同 callId 那条标成成功/失败。 */
+function markStep(binding, callId, ok) {
+  // 思考步骤没有 callId —— 不跳过的话会被下一条 tool/result 误标成 ✅
+  if (!callId) return;
+  const arr = binding.steps || [];
+  for (let i = arr.length - 1; i >= 0; i -= 1) {
+    if (arr[i].callId === callId) {
+      arr[i].ok = ok;
+      return;
+    }
+  }
+}
 
 const DEFAULTS = {
   host: '127.0.0.1',
@@ -218,7 +306,8 @@ export function apply(ctx, config = {}) {
       // 出站通道状态：SSE 没连上时回答先存这儿，连上再补发（见 flushPendingReplies）
       pendingReplies: [],
       sentMessageIds: new Set(),
-      view: { key, sessionId, status: 'idle', turn: 0, queue: [], streaming: '', error: null },
+      steps: [],
+    view: { key, sessionId, status: 'idle', turn: 0, queue: [], streaming: '', steps: [], error: null },
     };
     bindings.set(key, binding);
     bySession.set(sessionId, binding);
@@ -246,6 +335,9 @@ export function apply(ctx, config = {}) {
       queue,
       queuedAhead: inbox.nextTurn.length, // 准确的"前面还有几条"，不是估的
       streaming: binding.view.streaming,
+      // 工具流水：卡片上只显示最近 MAX_STEPS 条，前面折叠成计数
+      steps: (binding.steps || []).slice(-MAX_STEPS),
+      stepsTotal: (binding.steps || []).length,
       error: binding.view.error,
       updatedAt: Date.now(),
     };
@@ -307,14 +399,12 @@ export function apply(ctx, config = {}) {
   // 所以先塞进 binding.pendingReplies，新订阅者连上时补发。
   const MAX_PENDING_REPLIES = 20;
 
-  function pushReply(binding, text, reasoning) {
+  function pushReply(binding, text) {
     const frame = {
       key: binding.key,
       sessionId: binding.sessionId,
       chatId: binding.chatId || '',
       text,
-      // 思考过程与深度：飞书那边做成折叠区，不占正文空间
-      reasoning: reasoning || '',
       effort: cfg.reasoningEffort || 'auto',
       turn: binding.turn || 0,
       at: Date.now(),
@@ -427,12 +517,46 @@ export function apply(ctx, config = {}) {
   ctx.on('session/event', (session, event) => {
     const b = bySession.get(session?.id);
     if (!b) return;
-    if (!event || event.type !== 'assistant/message') return;
+    if (!event) return;
+
+    // ── 工具流水：这是「服务器明明在干活、群里却看不见」的正面修复 ──
+    // 'tool/call'   { turn, step, callId, name, arguments }  arguments 是未解析的 JSON 字符串
+    // 'tool/result' { turn, step, message, error?, meta? }
+    // 定义见 dsh-session/lib/types/types.d.ts:355 与 :375
+    if (event.type === 'tool/call') {
+      const d = event.data || {};
+      pushStep(b, {
+        kind: 'tool',
+        callId: d.callId,
+        verb: verbOf(d.name),
+        hint: hintOf(d.name, d.arguments, b.cwd),
+      });
+      schedulePush(b, true);
+      return;
+    }
+    if (event.type === 'tool/result') {
+      const d = event.data || {};
+      markStep(b, d.callId, !(d.message && d.message.isError));
+      schedulePush(b);
+      return;
+    }
+
+    if (event.type !== 'assistant/message') return;
     const text = textOfMessage(event.data?.message);
+
+    // 思考只作为「一条流水」，绝不整段贴进回答卡片。
+    // 用户的评价：「莫名其妙的尾部贴上全部思考和过程，又占地方又恶心人」。
     const reasoning = reasoningOfMessage(event.data?.message);
-    // 只有思考没有正文（纯工具调用的那一轮）就不发，避免刷屏；
-    // 正文和思考都有时才把思考一并带上。
-    if (!text) return;
+    if (reasoning) {
+      const one = reasoning.replace(/\s+/g, ' ').trim();
+      if (one) pushStep(b, { kind: 'think', verb: '思考', hint: one.length > 90 ? one.slice(0, 90) + '…' : one });
+    }
+
+    // 只有思考没有正文（纯工具调用的那一轮）就不发回答，避免刷屏。
+    if (!text) {
+      schedulePush(b);
+      return;
+    }
     const msgId = event.data?.message?.id;
     // 同一条消息可能因为投影刷新被重复投递，按 message id 去重
     if (msgId && b.sentMessageIds.has(msgId)) return;
@@ -440,7 +564,7 @@ export function apply(ctx, config = {}) {
     if (b.sentMessageIds.size > 200) {
       b.sentMessageIds = new Set([...b.sentMessageIds].slice(-100));
     }
-    pushReply(b, text, reasoning);
+    pushReply(b, text);
     schedulePush(b, true); // 顺带把卡片刷成最新状态（可能是空闲）
   }, GLOBAL);
 

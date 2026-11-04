@@ -2,6 +2,55 @@
 
 每条都写清「症状 → 根因 → 修法」，因为这里每一个坑都是线上踩出来的，不是设想出来的。
 
+## 0.1.9 — 2026-11-04
+
+（含 0.1.10 / 0.1.11 两个补丁，都是同一个改动的打磨）
+
+### 新增：工具流水——服务器在干活，群聊里终于看得见了
+
+**症状**：用户发「画图给我」，然后指着截图说：
+
+> 你看这服务器上明明是在工作的，但是群聊里根本就不显示，然后还莫名其妙的尾部贴上全部思考和过程，又占地方又恶心人
+
+DSH 本机的执行面板明明逐条列着 `思考 · Draw a second figure…` / `写入 · chem/gen_exam5b.py 11KB +259 -0` / `运行命令 · Render second mechanism sheet` / `读取图片 · chem/exam5_carbanion2.png`，飞书这边只有一张 `空闲 · 第 1 轮` 的空白卡。
+
+**根因**：这个通道从来只订阅 `assistant/message`，**`tool/call` 和 `tool/result` 事件一次都没接**。而 0.1.8 为了「把思考过程显示出来」，把 `reasoning` 全文塞进了回答卡片的 `note` —— 几千字英文独白贴在回答下面，正是用户说的「又占地方又恶心人」。
+
+**修法**：
+
+1. 订阅 `session/event` 的 `tool/call`（`{turn, step, callId, name, arguments}`，`arguments` 是未解析的 JSON 字符串）与 `tool/result`（`{turn, step, message, error?, meta?}`），维护 `binding.steps`。
+2. 工具名映射成中文动词（`read_image` → 读取图片、`write` → 写入、`bash` → 运行命令…），参数里挑最能说明意图的字段当提示（命令类优先 `description` 而不是整条 `command`）。
+3. 文件路径**相对 cwd** 显示（`chem/gen_exam5b.py`，不是 `/home/agent/work/chem/gen_exam5b.py`）——DSH GUI 就是这么显示的。
+4. `tool/result` 按 `callId` 回标 ✅/❌。**思考步骤没有 callId，必须跳过**，否则会被下一条结果误标成成功（0.1.10 修的）。
+5. 思考降级成**一条流水**（首 90 字），**不再进回答卡片**；回答卡片只留正文。
+6. 卡片布局重做：标题 `🧠 正在处理` / `💤 空闲`（**不再显示工作区路径**，它会被截成 `…/agent/work`，既不好看也没信息量），工作区降级到页脚且只留最后一段目录名。
+
+**实测**（同一套脚本，让它「建个文件再 ls 确认」）：
+
+```
+🧠 正在处理 / 在跑 · 第 2 轮
+_… 前面 3 步已完成_
+**思考** · 5 more carbanion-attack templates: (2) 羧酸衍生物两次加成
+**写入** · chem/gen_exam5b.py ✅
+**思考** · footer line 2 has (+1C)；环氧 → 伯醇 (+2C)
+**运行命令** · Render second mechanism sheet ✅
+**读取图片** · chem/exam5_carbanion2.png ✅
+**写入** · chem/gen_exam5b.py ✅
+**运行命令** · Re-render second sheet ❌
+好的，我把第 2、3、4、6、7 类也画成箭头图……
+[停]
+11 步 · 工作区 chem
+```
+
+回答帧也确认干净了：
+
+```
+reply 字段: ['at','chatId','effort','key','sessionId','text','turn']
+reply 有 reasoning? False
+```
+
+---
+
 ## 0.1.8 — 2026-11-04
 
 ### 修复：回答排成一大坨纯文本，且把思考过程整个丢了

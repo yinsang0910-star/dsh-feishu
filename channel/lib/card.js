@@ -59,13 +59,25 @@ export function renderView(view) {
     });
   }
 
-  // 流式正文：截尾部，别把整段塞进卡片（飞书卡片 JSON 有大小上限）
+  // 工具流水：这是「服务器明明在干活、群里却看不见」的正面修复。
+  // 只显示最近几条，前面的折叠成一行计数（卡片大小有上限）。
+  const steps = view.steps || [];
+  const total = view.stepsTotal || steps.length;
+  if (steps.length) {
+    elements.push({ tag: 'hr' });
+    const rows = [];
+    if (total > steps.length) rows.push(`_… 前面 ${total - steps.length} 步已完成_`);
+    for (const st of steps) rows.push(stepLine(st));
+    elements.push({ tag: 'div', text: { tag: 'lark_md', content: rows.join('\n') } });
+  } else if (phase === 'running') {
+    elements.push({ tag: 'hr' });
+    elements.push({ tag: 'div', text: { tag: 'lark_md', content: '_正在想…_' } });
+  }
+
+  // 流式正文：只留尾部，别把整段塞进卡片（飞书卡片 JSON 有大小上限）
   if (view.streaming) {
     elements.push({ tag: 'hr' });
-    elements.push({
-      tag: 'div',
-      text: { tag: 'lark_md', content: tail(view.streaming, 1200) },
-    });
+    elements.push({ tag: 'div', text: { tag: 'lark_md', content: tail(view.streaming, 600) } });
   }
 
   if (view.error) {
@@ -105,6 +117,15 @@ export function renderView(view) {
     elements.push({ tag: 'action', actions: buttons });
   }
 
+  // 页脚：真有人想知道在哪个目录、跑了几步，放这里，一行说完。
+  const foot = [];
+  if (view.stepsTotal) foot.push(`${view.stepsTotal} 步`);
+  const ws = String(view.cwd || '').split('/').filter(Boolean).pop();
+  if (ws) foot.push(`工作区 ${ws}`);
+  if (foot.length) {
+    elements.push({ tag: 'note', elements: [{ tag: 'plain_text', content: foot.join(' · ') }] });
+  }
+
   const card = {
     config: {
       wide_screen_mode: true,
@@ -112,7 +133,9 @@ export function renderView(view) {
       update_multi: true,
     },
     header: {
-      title: { tag: 'plain_text', content: `工作区 ${shortCwd(view.cwd)}` },
+      // 标题只说「在干什么」。工作区路径放标题里会被截成「…/agent/work」，
+      // 既不好看也没信息量，降级到结尾 note 且只留最后一段目录名。
+      title: { tag: 'plain_text', content: phase === 'running' ? '🧠 正在处理' : '💤 空闲' },
       subtitle: { tag: 'plain_text', content: titleBits.join(' · ') },
       template: PHASE_TEMPLATE[phase],
     },
@@ -122,6 +145,15 @@ export function renderView(view) {
   const text = plainText(view, titleBits, queue);
   // key 必须带出去：bot.py 靠它把同一条会话的所有快照 patch 到同一张卡片上。
   return { key: view.key, chatId: view.chatId, card, text, rev: view.updatedAt || Date.now() };
+}
+
+/** 工具流水一行：`**动词** · 提示 ✅` —— 照 DSH GUI 那个执行面板的写法 */
+function stepLine(st) {
+  const mark = st.ok === true ? ' ✅' : st.ok === false ? ' ❌' : '';
+  // hint 里是文件路径/命令，不该整体转义（\_ 在飞书里会显示成下划线但容易看错），
+  // 只挡掉会破坏 lark_md 结构的 * 和 [
+  const hint = st.hint ? ` · ${String(st.hint).replace(/([*[])/g, '\\$1')}` : '';
+  return `**${escapeMd(st.verb || '步骤')}**${hint}${mark}`;
 }
 
 function queuedLine(q, i) {

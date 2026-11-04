@@ -2,7 +2,7 @@
 
 把飞书接成 DSH 的**通道**，而不是给机器人加一个队列。
 
-当前版本 **0.1.8**，变更明细见 [CHANGELOG.md](CHANGELOG.md)。
+当前版本 **0.1.11**，变更明细见 [CHANGELOG.md](CHANGELOG.md)。
 
 ```
 飞书群/话题
@@ -73,10 +73,10 @@ profile 是 `~/.dsh/profiles/web`，dsh 版本 `0.2.1-rc.5`，node `v22.23.4`。
 ```powershell
 # 笔记本上
 cd dsh-feishu-channel
-npm pack                    # → dsh-feishu-channel-0.1.8.tgz
+npm pack                    # → dsh-feishu-channel-0.1.11.tgz
 
 $env:MSYS_NO_PATHCONV=1
-cmd /c "ssh -o BatchMode=yes agent ""cat > /home/agent/.dsh/profiles/web/local-packages/dsh-feishu-channel-0.1.8.tgz"" < ""dsh-feishu-channel-0.1.8.tgz"""
+cmd /c "ssh -o BatchMode=yes agent ""cat > /home/agent/.dsh/profiles/web/local-packages/dsh-feishu-channel-0.1.11.tgz"" < ""dsh-feishu-channel-0.1.11.tgz"""
 # 传完两边 md5sum 对一下
 ```
 
@@ -272,7 +272,7 @@ curl -sN http://127.0.0.1:8788/events?key=lark:default:oc_reply_selftest
 dsh-feishu-channel/
 ├─ package.json          # dsh.bundle.patch 指向 cordis.patch.yml；files 白名单防打包带 tgz
 ├─ cordis.patch.yml      # 注册行（port / token / workspaceRoot / stateDir / provider / model）
-├─ CHANGELOG.md          # 0.1.0 → 0.1.8 逐条「症状 → 根因 → 修法」
+├─ CHANGELOG.md          # 0.1.0 → 0.1.11 逐条「症状 → 根因 → 修法」
 ├─ 方案-DSH原生通道重构.md  # 设计文档：三通道对比、inbox 语义、业界对照
 ├─ lib/
 │  ├─ index.js           # 插件主体：HTTP + SSE + ensureAgent(单飞) + preset mount + ingest + control + reply
