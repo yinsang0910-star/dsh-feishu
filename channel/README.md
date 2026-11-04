@@ -1,6 +1,6 @@
 # dsh-feishu-channel
 
-> **这是第二代方案。** 第一代是 [dsh-feishu](https://github.com/yinsang0910-star/dsh-feishu)
+> **这是第二代方案。** 本目录原本是独立仓库，合并记录见 [HISTORY.md](HISTORY.md)。 第一代是 [dsh-feishu](https://github.com/yinsang0910-star/dsh-feishu)
 > （MCP server + 长连接机器人 + 卡片网关，36 个工具，靠每条消息 spawn 一个 `dsh headless` 子进程）。
 > 第二代不再起子进程，而是接进 DSH 的**原生会话**：消息落 agent inbox 的 `next-turn` / `next-step`，
 > 所以「跑着的时候补一句」能真的插进去，而不是排队等下一条。
