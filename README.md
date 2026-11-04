@@ -1,3 +1,15 @@
+> **这是第一代方案，线上机器人已被第二代取代。**
+> 第二代：[dsh-feishu-channel](https://github.com/yinsang0910-star/dsh-feishu-channel)
+> —— 它不再给每条消息 spawn 一个 `dsh headless` 子进程，而是接进 DSH 的原生会话
+> （inbox 的 `next-turn` / `next-step`），所以「跑着的时候补一句」能真的插进去，而不是排队。
+>
+> 第一代仍然有价值的两个部分：`packages/mcp`（36 个工具的 MCP server，任何时候都能单独用）
+> 与 `packages/dsh-plugin`（DSH 里的飞书连接设置页）。`services/feishu-bot` 是现在线上那个
+> `bot.py` 的前身。
+>
+> 仓库打扫记录：`dsh-feishu-mcp`、`dsh-feishu-plugin` 原本是本仓库 `packages/mcp`、`packages/dsh-plugin`
+> 的构建产物镜像（提交信息里写着 "sync: 从主仓库打包/同步"），内容与主仓库重复，已归档（只读，可恢复）。
+
 <p align="center">
   <img src="docs/assets/logo.svg" width="104" alt="dsh-feishu">
 </p>
