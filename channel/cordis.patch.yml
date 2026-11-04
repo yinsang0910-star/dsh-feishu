@@ -1,0 +1,48 @@
+# dsh-feishu-channel — 把飞书接成 DSH 原生通道
+#
+# 挂到 profile 里：在 profiles/<name>/package.json 的 dsh.profile.bundles 数组里加
+#   "dsh-feishu-channel"
+# 并在 package.json 的 dependencies 里加
+#   "dsh-feishu-channel": "file:local-packages/dsh-feishu-channel-0.1.7.tgz"
+# （本机开发时用 link: 指向源码目录也行）
+#
+# 注意：不要把本插件的服务名塞进 inject —— Cordis 会对未就绪的 key 空等，
+# 一写错就是宿主 pending → 退出码 1。参见 dsh-purge/lib/index.js:42 的注释。
+
+- insert:
+    - id: dsh-feishu-channel
+      name: 'dsh-feishu-channel'
+      # agentPresets 是 0.1.5 起必须的：没有它拿不到 preset registry，
+      # 建出来的 agent 是空壳（只有第三方工具，0 个内置工具）。
+      inject: [agents, agentPresets]
+      config:
+        # bot.py 跑在 PVE 宿主（192.168.1.200），插件跑在 agent（.205）——
+        # 跨机访问必须监听对外地址；只想本机验证时改成 127.0.0.1。
+        # 暴露面由 token 兜住：没有 X-Channel-Token 的请求一律 401。
+        host: 0.0.0.0
+        port: 8788
+        # 简单共享口令：bot.py 每次请求带 X-Channel-Token。
+        # 留空 = 不做鉴权（只能在本机/可信内网这么用）。
+        # 生成：head -c 24 /dev/urandom | base64 | tr -d '/+=' | head -c 32
+        token: ''
+        # 默认工作区根；每条消息可用 /cd 覆盖
+        workspaceRoot: /home/agent/work
+        # 同一会话里，非发起者的话默认按 followup 处理（业界默认）
+        collaborativeSteering: true
+        # 进度事件合并窗口（毫秒），硬下限见 lib/index.js 的 MIN_FLUSH_MS
+        flushMs: 800
+        # outbox / 绑定关系落盘位置
+        stateDir: /home/agent/.dsh-feishu-channel
+
+        # ↓ 这三项必须给，不能省。
+        # 插件用 AgentRegistry.create() 程序化建会话，**不继承** profile 里
+        # agent-default-model 那份「默认 agent」配置。不给就在第一轮报
+        # agent "feishu-..." has no provider/model，消息收下了但一句话都跑不出来。
+        provider: opencode-go
+        model: deepseek-v4.1-flash
+        reasoningEffort: high
+
+        # 装配哪个 preset（决定 agent 有哪些工具）。
+        # standard 来自 web profile 的 preset-standard（其 config.id 是 standard），
+        # 含 tool-bash / tool-fs（read_image 在里面）/ tool-jobs / compaction / delegation。
+        agentPreset: standard
