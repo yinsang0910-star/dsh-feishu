@@ -135,6 +135,54 @@ export class Outbox {
  * 简单 KV 存储：会话键 → { cwd, ownerOpenId, cardMsgId, ... }。
  * 卡片 message_id 存这里，重启后还能继续 patch 同一张卡，而不是再发一张。
  */
+/**
+ * 「群 → 会话」的持久绑定。
+ *
+ * 为什么需要：binding 只活在内存里，dsh-web 一重启就全清，之后门房的 SSE 全部 404、
+ * 卡片停在重启那一刻，要等用户再发一条才重建。落盘之后 /events 能就地复活。
+ *
+ * 只存复活必需的四个字段；steps/replies/订阅者这些是运行时状态，重启后重建即可。
+ */
+export class BindingStore {
+  constructor(dir) {
+    this.dir = dir;
+    this.path = join(dir, 'bindings.json');
+    mkdirSync(dir, { recursive: true });
+    /** @type {Record<string, object>} */
+    this.data = {};
+    if (existsSync(this.path)) {
+      try {
+        this.data = JSON.parse(readFileSync(this.path, 'utf8')) || {};
+      } catch {
+        this.data = {};
+      }
+    }
+  }
+
+  get(key) {
+    return this.data[key];
+  }
+
+  keys() {
+    return Object.keys(this.data);
+  }
+
+  save(key, fields) {
+    this.data[key] = { ...(this.data[key] || {}), ...fields, savedAt: Date.now() };
+    this.flush();
+    return this.data[key];
+  }
+
+  delete(key) {
+    delete this.data[key];
+    this.flush();
+  }
+
+  flush() {
+    writeFileSync(this.path, `${JSON.stringify(this.data, null, 2)}\n`, 'utf8');
+  }
+}
+
 export class SessionState {
   constructor(dir) {
     this.dir = dir;

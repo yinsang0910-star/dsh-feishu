@@ -25,7 +25,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
-import { Outbox, SessionState } from './store.js';
+import { Outbox, SessionState, BindingStore } from './store.js';
 import { sessionKey, sessionIdFor } from './sessionkey.js';
 import { renderView } from './card.js';
 
@@ -147,6 +147,8 @@ export function apply(ctx, config = {}) {
   const cfg = { ...DEFAULTS, ...config };
   const outbox = new Outbox(cfg.stateDir);
   const sessions = new SessionState(cfg.stateDir);
+  // 落盘：dsh-web 重启后内存绑定会清零，/events 靠这份记录复活（见 reviveBinding）
+  const bindingStore = new BindingStore(cfg.stateDir);
 
   /** @type {Map<string, object>} key → Binding */
   const bindings = new Map();
@@ -311,12 +313,59 @@ export function apply(ctx, config = {}) {
     };
     bindings.set(key, binding);
     bySession.set(sessionId, binding);
+    // 建好就落盘：这样即使下一秒重启，/events 也能把这条群接回来
+    persistBinding(binding, true);
     return binding;
   }
 
   // ─────────────────────────────────────────────────────────────
   // 事件 → 视图模型（这里不猜状态，全部读真值）
   // ─────────────────────────────────────────────────────────────
+
+  // ─────────────────────────────────────────────────────────────
+  // 绑定落盘 / 复活
+  // ─────────────────────────────────────────────────────────────
+
+  /**
+   * 把复活必需的字段写盘。节流 3 秒，避免 snapshot 每次刷新都写文件。
+   */
+  function persistBinding(binding, force) {
+    if (!binding) return;
+    const now = Date.now();
+    if (!force && binding._persistAt && now - binding._persistAt < 3000) return;
+    binding._persistAt = now;
+    try {
+      bindingStore.save(binding.key, {
+        sessionId: binding.sessionId,
+        cwd: binding.cwd || cfg.workspaceRoot,
+        chatId: binding.chatId || '',
+      });
+    } catch (err) {
+      ctx?.logger?.warn?.(`[feishu] 绑定落盘失败 ${binding.key}: ${err?.message || err}`);
+    }
+  }
+
+  /**
+   * dsh-web 重启后内存绑定清零，但磁盘上还有这条群的记录 → 就地把 agent 接回来。
+   *
+   * 走 ensureAgent，所以优先 resume 原来那个 session（记忆不丢），
+   * resume 失败才回落派生 id。返回 undefined 表示这条 key 真没记录。
+   */
+  async function reviveBinding(key) {
+    const rec = bindingStore.get(key);
+    if (!rec) return undefined;
+    try {
+      const binding = await ensureAgent(key, rec.cwd || cfg.workspaceRoot, rec.sessionId);
+      if (rec.chatId) binding.chatId = rec.chatId;
+      if (rec.sessionId) binding.view.turn = binding.view.turn || 0;
+      persistBinding(binding, true);
+      ctx?.logger?.info?.(`[feishu] 恢复绑定 ${key} → ${binding.sessionId}（重启后自动接回，记忆保留）`);
+      return binding;
+    } catch (err) {
+      ctx?.logger?.warn?.(`[feishu] 恢复绑定失败 ${key}: ${err?.message || err}`);
+      return undefined;
+    }
+  }
 
   function snapshot(binding) {
     const { agent } = binding;
@@ -341,6 +390,8 @@ export function apply(ctx, config = {}) {
       error: binding.view.error,
       updatedAt: Date.now(),
     };
+    // chatId / turn 会随消息变化，顺手节流落盘一次（3 秒内不重复写）
+    if (binding.chatId) persistBinding(binding);
     return binding.view;
   }
 
@@ -623,7 +674,11 @@ export function apply(ctx, config = {}) {
       throw err;
     }
     // 记下 chatId：bot.py 收到 view 之后要往这个会话里画卡片。
-    if (msg.chatId) binding.chatId = msg.chatId;
+    // chatId 是复活后的关键（没它就不知道该把卡片画到哪个群），所以一变就强制落盘。
+    if (msg.chatId && binding.chatId !== msg.chatId) {
+      binding.chatId = msg.chatId;
+      persistBinding(binding, true);
+    }
 
     // 2) 选队列。默认 followup —— 跟 Copilot SDK / OpenClaw / Cursor 的默认一致：
     //    "随手再发一句"不该被猜成打断。
@@ -801,7 +856,18 @@ export function apply(ctx, config = {}) {
     // SSE：bot.py 订阅视图变化，自己决定怎么画卡片
     if (req.method === 'GET' && url.pathname === '/events') {
       const key = url.searchParams.get('key') || '';
-      const binding = bindings.get(key);
+      let binding = bindings.get(key);
+      if (!binding) {
+        // dsh-web 重启后内存绑定没了，但磁盘上还有 → 复活再连（否则门房只能拿到 404）
+        // reviveBinding 自己吞异常并返回 undefined；这里再兜一层，
+        // 因为未捕获的 rejection 会让整个 dsh 进程 fatal（2026-11-04 实测踩过）
+        try {
+          binding = await reviveBinding(key);
+        } catch (err) {
+          ctx?.logger?.warn?.(`[feishu] 复活会话 ${key} 失败：${err?.message || err}`);
+          binding = undefined;
+        }
+      }
       if (!binding) return json(res, 404, { ok: false, reason: 'no such session' });
 
       res.writeHead(200, {

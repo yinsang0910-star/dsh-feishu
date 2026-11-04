@@ -2,6 +2,42 @@
 
 每条都写清「症状 → 根因 → 修法」，因为这里每一个坑都是线上踩出来的，不是设想出来的。
 
+## 0.1.12 — 2026-11-04
+
+（含 0.1.13 / 0.1.14 两个补丁，同一个改动的打磨）
+
+### 修复：dsh-web 一重启，卡片就停在那一秒
+
+**症状**：用户在群里发消息，任务真的跑了、图也画出来了，但那张卡永远停在「🧠 正在处理」或者干脆停在重启那一刻的旧样子，一个字都不再更新。用户的原话：
+
+> 你确定这个卡片已经恢复到之前我们设计的那种形式了吗，我怎么感觉没变化呢
+
+**根因**：binding（「哪个群 → 哪个会话」）只活在内存里（`const bindings = new Map()`）。dsh-web 一重启就全清，之后门房 PVE 的 SSE 全部 404，要等用户再发一条消息才重建。这一条链路一旦断在重启那一刻，前面所有正常的工作都白干（结果到不了群里）。
+
+更糟的是它还掩盖过一次真 bug：门房 `channel.py` 的「404 就停订阅」补丁被后来部署的旧版文件覆盖过，于是坏线程 `alive` 永远是 `true`，`watch()` 的幂等检查直接复用它 —— 任务跑完、回答到了、卡片纹丝不动。
+
+**修法**：
+
+1. `store.js` 新增 `BindingStore`（`stateDir/bindings.json`，写法照 `SessionState`），只存复活必需的四个字段：`sessionId` / `cwd` / `chatId` / `savedAt`
+2. `index.js` 建 binding 时立即落盘；`chatId` 一变就强制落盘（没它就不知道该把卡片画到哪个群）
+3. `/events` 发现内存里没有这个 key，就 `reviveBinding()` 从磁盘复活 —— 走 `ensureAgent`，所以**优先 resume 原来那个 session，记忆不丢**
+4. `snapshot()` 里节流 3 秒顺手刷新一次（`turn` 会变）
+
+**踩到的坑（值得单独记）**：
+
+- `reviveBinding` 里我写了裸 `log(...)`，而插件里根本没有 `log` 这个函数（全项目用的是 `ctx?.logger?.info?.()`）。结果**未捕获的 rejection 让整个 dsh 进程 fatal 退出**：`dsh: fatal load failure: ReferenceError: log is not defined at reviveBinding`。0.1.13 修。
+- 修完还在 `/events` 外面再包了一层 try/catch —— 复活失败只该是「这条群没救回来」，绝不能把整个 dsh 带走。0.1.14。
+- `lib/*.bak-before-*` 备份文件会被 `"files": ["lib/"]` 打进 npm 包（包从 34KB 涨到 47KB）。备份必须放在 `.bak/`（`.gitignore` 已排除）。
+
+**验证**：
+
+```
+1) ingest 建 binding → bindings.json 出现 {sessionId, cwd, chatId}
+2) systemctl --user restart dsh-web → health.sessions 归 0（内存确实空了）
+3) 不发任何消息，直接连 /events?key=... → 200 + view 帧（不是 404）
+4) health.sessions → 1（binding 复活）
+5) sessionId 与重启前一致 → 老会话的记忆还在
+```
 ## 0.1.9 — 2026-11-04
 
 （含 0.1.10 / 0.1.11 两个补丁，都是同一个改动的打磨）
