@@ -20,10 +20,13 @@ packages/mcp/src/
     ├── index.ts         # 注册汇总，已完成，不要改
     ├── types.ts         # ToolContext / ok / fail，已完成，不要改
     ├── base.ts          # 样板工具（feishu_whoami / feishu_send_info_card）
-    ├── messages.ts      # ← 你负责的
-    ├── files.ts         # ← 你负责的
-    ├── context.ts       # ← 你负责的
-    └── directory.ts     # ← 你负责的
+    ├── messages.ts      # 发消息、回复、改卡片
+    ├── files.ts         # 上传下载
+    ├── context.ts       # 会话上下文、阻塞式提问
+    ├── directory.ts     # 会话列表、成员
+    ├── chat.ts          # 撤回、转发、置顶、建群/改群/解散、群文件、删云文件
+    ├── bitable.ts       # 多维表格
+    └── docs.ts          # 云空间、文档、电子表格、知识库
 ```
 
 ## 每个文件必须导出

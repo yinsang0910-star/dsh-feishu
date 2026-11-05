@@ -125,7 +125,7 @@
 2026-11-04 加过一版「通道模式」：消息不 spawn 子进程，而是投给 agent 机上常驻的
 `dsh-feishu-channel` 插件，由 DSH 在轮次/step 边界领取 —— 换来「插话」「/下一轮」「流式」。
 
-它带来三个问题，所以默认关掉（`config.json` 里 `channel_mode: "off"`）：
+它带来三个问题（第 1 条已经修了，第 2、3 条还在），所以默认关掉（`config.json` 里 `channel_mode: "off"`）：
 
 1. **同一句话两张卡**：`ingest` 超时后无条件退回老路径，而插件其实已经接单 →
    插件卡 + 老路径进度卡同时在。日志里能看到
@@ -145,7 +145,7 @@
 飞书里常见操作是：先打字发出去，再补一条只有 `@机器人` 的消息。原来这会得到一句
 「在。直接说要做什么就行」，因为清洗完 `@` 之后正文是空的。
 
-现在 `handle_inner` 会记住每个人在每个会话里说的上一句（`_LAST_MSG`，**180 秒**内有效），
+现在 `handle_inner` 会记住每个人在每个会话里说的上一句（`_LAST_MSG`，**60 秒**内有效），
 只发 `@` 时接上那句。两种写法都认：
 
 - 飞书 @ 组件给的占位符 `@_user_1`（事件里的真实形态）
@@ -169,7 +169,7 @@ systemctl restart feishu-bot.service
 ```
 
 只退并发：把 `max_concurrent` 改成 `1`，重启。
-只退 @：删掉 `handle_inner` 里的 `reply()` 包装，把调用换回 `send(chat_id, …)`（40 处）。
+只退 @：删掉 `handle_inner` 里的 `reply()` 包装，把调用换回 `send(chat_id, …)`（45 处）。
 只退引用：删掉 `handle_inner` 里 `quote_note` 那一段。
 只退插嘴判断：删掉 `handle_inner` 里 `_chatter_reason` 那个 `if` 块。
 只退停手：删掉 `STOP_WORDS` 那个 `if` 块（「停」命令仍然有效）。

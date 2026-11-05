@@ -67,7 +67,7 @@
 | ⚠️ `feishu_bitable_update` | 按 `record_id` 更新部分字段（只覆盖传了的字段） |
 | ⚠️ `feishu_bitable_delete` | 按 `record_id` 删一条记录。**不可撤销**，无回收站。需传 `confirm: true` |
 
-## 七、云空间 / 文档 / 表格 / 知识库（7）
+## 七、云空间 / 文档 / 表格 / 知识库（8）
 
 | 工具 | 说明 |
 | --- | --- |

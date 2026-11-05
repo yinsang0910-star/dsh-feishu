@@ -438,7 +438,7 @@ export function registerFileTools(server: McpServer, ctx: ToolContext): void {
         '不传 file_key 时会自动从消息 content 里取（file_key 或 image_key）；' +
         '落盘名优先用消息里自带的名字，没有就用 <messageId>_<fileKey前8位>.<后缀>，同名文件自动加 -1 后缀不覆盖。',
       inputSchema: {
-        message_id: z.string().describe('消息 id（om_ 开头），从 feishu_list_messages 之类的结果里拿'),
+        message_id: z.string().describe('消息 id（om_ 开头），从 feishu_recent 之类的结果里拿'),
         file_key: z
           .string()
           .optional()

@@ -106,7 +106,7 @@ DEFAULTS = {
     "model": "deepseek-v4.1-flash",
     "reasoning_effort": "auto",
     "model_override_path": "/home/agent/.cache/feishu/model-override.yml",
-    "agent_host": "192.168.1.100",
+    "agent_host": "192.168.1.205",
     "agent_user": "agent",
     "agent_key": "/root/.ssh/agent_rsa",
     "agent_cwd": "/home/agent/work",
@@ -119,7 +119,7 @@ DEFAULTS = {
     "usage_key_file": "/home/agent/.config/dsh/opencode-go.env",
     # dsh-feishu 网关（可选）。它自己不持有长连接，只做「按钮答案中转站」：
     # 我们收到 card.action 后把 answer POST 过去，MCP 那边的 feishu_ask 就能秒回。
-    "gateway_url": "http://192.168.1.100:18642",
+    "gateway_url": "http://192.168.1.205:18642",
     "gateway_token": "",
     # 飞书原生通道（dsh-feishu-channel 插件）：把消息投进常驻 agent 的原生
     # 收件箱（next-turn / next-step），而不是每条消息 spawn 一个 dsh-task。
@@ -142,7 +142,7 @@ INFO = """直接说要做什么就行，我会转给 agent 工作站上的 DSH�
 /状态    在跑什么、排队几个、用的什么脑子
 /排队    排了哪些活；/清队 清空
 
-跑着的时候还能补一句（不用等它干完）：
+跑着的时候还能补一句（仅通道模式；/状态 里的「跑法」写着当前是哪种）：
   直接说话 = 插话，下一步就生效    /下一轮 xxx = 排到下一轮再说
   /备注 xxx = 只补背景不打断       卡片上直接有 停 / 撤回 / 清队 按钮
 /额度    模型用量还剩多少
@@ -485,7 +485,7 @@ def deliver(chat_id, text, title="结果", at=None):
 # 让 agent 自己用 read_image / 读写工具去看——headless CLI 没有 --image 参数。
 
 ATTACH_TYPES = ("image", "file", "media", "audio")
-STASH_TTL = 900           # 群里先收着的图，10 分钟内 @ 一句还能挂上
+STASH_TTL = 900           # 群里先收着的图，15 分钟内 @ 一句还能挂上
 
 
 def _guess_ext(data: bytes) -> str:
@@ -1671,6 +1671,12 @@ def help_card():
             "`/whoami` 我的 open_id 和当前项目　`/name 名字` 让我怎么叫你",
             "危险动作会发卡片问你要不要放行，点按钮即可",
         ]),
+        {"tag": "action", "actions": [
+            {"tag": "button", "text": {"tag": "plain_text", "content": "看全部模型"},
+             "type": "default", "value": {"act": "model_all"}},
+            {"tag": "button", "text": {"tag": "plain_text", "content": "换思考档"},
+             "type": "primary", "value": {"act": "open_effort"}},
+        ]},
     ]
     return {
         "config": {"wide_screen_mode": True, "update_multi": True},
@@ -3166,6 +3172,12 @@ def _do_switch(act, value, chat_id, message_id):
             if chat_id:
                 deliver(chat_id, models_text())
             return
+        if act == "open_effort":
+            if message_id:
+                card_patch(message_id, effort_card())
+            elif chat_id:
+                card_create(chat_id, effort_card())
+            return
         if act == "set_model":
             if not value:
                 return
@@ -3236,7 +3248,7 @@ def on_card_action(data):
             return _build_card_response()
 
         # 模型 / 思考强度卡片：切换要真跑一次验证（十几秒），别堵住回调的 3 秒窗口
-        if act in ("set_model", "set_effort", "model_all"):
+        if act in ("set_model", "set_effort", "model_all", "open_effort"):
             ctx_obj = getattr(ev, "context", None)
             chat_id = getattr(ctx_obj, "open_chat_id", "") if ctx_obj else ""
             mid = getattr(ctx_obj, "open_message_id", "") if ctx_obj else ""
