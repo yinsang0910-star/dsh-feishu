@@ -2115,7 +2115,7 @@ def _launch(open_id, chat_id, text, cwd, approved=False, label=None):
 
 # 只发一个 @ 时，接他上一条说过的话（飞书里很常见：先打字，再补一个 @）
 _LAST_MSG = {}          # "chat_id|open_id" -> {"text": str, "ts": float}
-_LAST_MSG_TTL = 180     # 秒；超过这个时间就不接了，免得接到风马牛不相及的话
+_LAST_MSG_TTL = 60      # 秒；超过这个时间就不接了，免得接到风马牛不相及的话
 
 CHANNEL_CARDS = {}          # session key -> 卡片 message_id
 _CHANNEL_CARDS_LOCK = threading.Lock()
@@ -2720,6 +2720,10 @@ def handle_inner(data: P2ImMessageReceiveV1):
         if not text and not att and not quote_note:
             prev = _LAST_MSG.get("%s|%s" % (chat_id, sender)) or {}
             if prev and time.time() - float(prev.get("ts") or 0) <= _LAST_MSG_TTL:
+                # 那句话已经在跑了（典型：先发正文、再补一个 @）就别再跑一遍
+                if RUNNING.get(sender) or QUEUES.get(sender):
+                    reply("这句已经在跑了，等它出来。")
+                    return
                 text = prev["text"]
                 log.info("只发了个 @，接上他上一条：%r", text[:60])
             else:
