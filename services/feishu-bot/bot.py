@@ -906,11 +906,13 @@ def do_status():
         "df -h / /home/agent/work 2>/dev/null | tail -n +2; "
         "systemctl is-active dsh-web 2>/dev/null | sed 's/^/dsh-web: /'"
     )
-    return "【PVE 宿主 %s】\n%s\n\n【agent 工作站 %s】\n%s" % (
+    mode = "通道模式（能中途插话，卡片由插件画）" if channel_on() else "老路径（一句一张卡，不能插话）"
+    return "【PVE 宿主 %s】\n%s\n\n【agent 工作站 %s】\n%s\n\n跑法：%s" % (
         CONF.get("pve_label") or "PVE",
         a[1],
         CONF.get("agent_host") or "agent",
         b[1],
+        mode,
     )
 
 
