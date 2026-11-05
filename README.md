@@ -42,7 +42,7 @@
 | 角色 | 职责 |
 | --- | --- |
 | `feishu-bot` | 常驻长连接。身份校验、会话管理、任务队列、进度卡、审批按钮。自身不执行任务 |
-| agent | 实际执行方。`dsh --profile headless` 调用模型，36 个 MCP 工具是它的操作面 |
+| agent | 实际执行方。`dsh --profile headless` 调用模型，43 个 MCP 工具是它的操作面 |
 | `gateway` | 只做一件事：把卡片按钮的点击精确投递给正在等待回答的那次 `feishu_ask` |
 
 ## 它解决什么问题
