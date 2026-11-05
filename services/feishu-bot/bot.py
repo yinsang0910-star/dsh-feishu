@@ -2294,16 +2294,27 @@ def send_via_channel(open_id, chat_id, text, msg):
     # 换通道不清零记忆。接不上插件会自己开新的，不会报错。
     legacy_sid = STATE["sessions"].get(sess_key(open_id, cwd)) or ""
 
-    try:
-        r = ch.ingest(
+    def _ingest():
+        return ch.ingest(
             open_id=open_id, chat_id=chat_id, text=body, cwd=cwd,
             msg_id=mid, thread_id=thread_id, root_id=root_id,
             tenant_key=tenant, name=who_name(open_id), intent=intent,
             session_id=legacy_sid,
         )
+
+    try:
+        r = _ingest()
     except Exception as e:
-        log.warning("通道投递失败，退回老路径：%s", e)
-        return False
+        # 超时不等于没接单：插件可能已经收下，只是回执慢。
+        # 它按 msgId 幂等（重复投递回 duplicate=True），所以用同一个 msgId
+        # 重投一次是安全的 —— 第一次真成功就拿到 duplicate，第一次真失败就补上。
+        # 不这么做的话，退回老路径会和插件已接的单撞成两张卡。
+        log.warning("通道投递异常（%s），用同一 msgId 重投一次", e)
+        try:
+            r = _ingest()
+        except Exception as e2:
+            log.warning("通道重投仍失败，退回老路径：%s", e2)
+            return False
 
     key = r.get("key") or channel_mod.session_key(chat_id, thread_id, root_id, tenant)
     watch_channel(key)

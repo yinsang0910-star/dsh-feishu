@@ -38,7 +38,7 @@ import urllib.request
 
 log = logging.getLogger("channel")
 
-DEFAULT_TIMEOUT = 20
+DEFAULT_TIMEOUT = 45   # 插件忙的时候 20 秒不够，超时会误判成「没接单」
 
 
 # ─────────────────────────── 会话键 ───────────────────────────
