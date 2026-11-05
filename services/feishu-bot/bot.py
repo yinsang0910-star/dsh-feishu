@@ -900,6 +900,31 @@ def task_brief(open_id):
     return "\n".join(lines)
 
 
+def _recent_deliver(limit=5):
+    """列 work/deliver 下最近交付的几个文件。
+
+    交付物统一放这里的好处是「刚做出来的东西在哪」不用问 —— /状态 直接能看到，
+    用户也不用在项目目录里翻。
+    """
+    d = (CONF.get("agent_root") or "/home/agent/work").rstrip("/") + "/deliver"
+    code, out = run_agent(
+        'd=%s; [ -d "$d" ] || exit 0; '
+        'ls -t "$d" 2>/dev/null | head -n %d | while read -r f; do '
+        'sz=$(du -h "$d/$f" 2>/dev/null | cut -f1); echo "$f|$sz"; done'
+        % (shlex.quote(d), int(limit)),
+        timeout=40,
+    )
+    if code != 0:
+        return []
+    rows = []
+    for ln in (out or "").splitlines():
+        if "|" in ln:
+            name, sz = ln.split("|", 1)
+            if name.strip():
+                rows.append((name.strip(), sz.strip()))
+    return rows
+
+
 def do_status():
     a = run_pve("date '+%F %T'; uptime | sed 's/^ *//'; free -m | sed -n 2p; df -h / | tail -1")
     b = run_agent(
@@ -908,12 +933,24 @@ def do_status():
         "systemctl is-active dsh-web 2>/dev/null | sed 's/^/dsh-web: /'"
     )
     mode = "通道模式（能中途插话，卡片由插件画）" if channel_on() else "老路径（一句一张卡，不能插话）"
-    return "【PVE 宿主 %s】\n%s\n\n【agent 工作站 %s】\n%s\n\n跑法：%s" % (
+    try:
+        recent = _recent_deliver()
+    except Exception:
+        recent = []
+    if recent:
+        tail = "\n\n最近交付（%s/deliver）：\n%s" % (
+            (CONF.get("agent_root") or "").rstrip("/"),
+            "\n".join("  %s　%s" % (n, s) for n, s in recent),
+        )
+    else:
+        tail = "\n\n最近交付：deliver 目录还是空的（让它做点东西就会出现在这里）。"
+    return "【PVE 宿主 %s】\n%s\n\n【agent 工作站 %s】\n%s\n\n跑法：%s%s" % (
         CONF.get("pve_label") or "PVE",
         a[1],
         CONF.get("agent_host") or "agent",
         b[1],
         mode,
+        tail,
     )
 
 
@@ -1048,6 +1085,9 @@ PROMPT_TMPL = (
     "  feishu_user_lookup       邮箱/手机号查 open_id\n"
     "不确定自己有没有某个能力时，先看工具清单再回答，别直接说「我没有接口」；\n"
     "要发本地文件一律用 pushfile，MCP 传不了本地文件。\n\n"
+    "【交付物放哪】要给他的文件一律先写到 work 根目录下的 deliver/（不存在就 mkdir -p），"
+    "文件名用他一眼能看懂的中文名，然后 pushfile 那个绝对路径。"
+    "别把成品丢在项目目录深处——他要的是「刚做出来的东西在哪」，不是自己去翻。\n\n"
     "【图片与文件】他发来的图片/文件已经落到工作目录里（默认 .feishu-inbox/ 下），"
     "消息里给的是相对路径。图片必须用 read_image 真的打开看（能看图，别凭文件名猜），"
     "文件用读写工具打开；原件保留，不要删。\n"
