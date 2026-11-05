@@ -3,7 +3,7 @@
 > —— 它不再给每条消息 spawn 一个 `dsh headless` 子进程，而是接进 DSH 的原生会话
 > （inbox 的 `next-turn` / `next-step`），所以「跑着的时候补一句」能真的插进去，而不是排队。
 >
-> 第一代仍然有价值的两个部分：`packages/mcp`（36 个工具的 MCP server，任何时候都能单独用）
+> 第一代仍然有价值的两个部分：`packages/mcp`（43 个工具的 MCP server，任何时候都能单独用）
 > 与 `packages/dsh-plugin`（DSH 里的飞书连接设置页）。`services/feishu-bot` 是现在线上那个
 > `bot.py` 的前身。
 >
@@ -147,7 +147,7 @@ docker build -t dsh-feishu-mcp .
 docker run --rm -i -e FEISHU_APP_ID=cli_xxx -e FEISHU_APP_SECRET=xxx dsh-feishu-mcp
 ```
 
-未配置凭据时进程仍会启动并完成握手，`tools/list` 正常返回 36 个工具，只有真正调用工具才返回「飞书凭据未配置」——目录站与客户端的自检因此不会看到「server 崩了」。
+未配置凭据时进程仍会启动并完成握手，`tools/list` 正常返回 43 个工具，只有真正调用工具才返回「飞书凭据未配置」——目录站与客户端的自检因此不会看到「server 崩了」。
 
 提供 `FEISHU_APP_ID` / `FEISHU_APP_SECRET` 即可运行。挂进 DSH 的方式是编辑
 `~/.dsh/profiles/<profile>/cordis.patch.yml`：
@@ -221,7 +221,7 @@ bash services/agent-workspace/install-mnemon.sh      # 幂等，已装则只做�
 - 机器人必须**先被拉进群**，`feishu_chats` 只列它已加入的会话。
 - 卡片要支持原地更新，发卡时必须带 `config.update_multi = true`（本项目自带模板默认已带）。
 
-## 36 个工具
+## 43 个工具
 
 工具名在客户端里带前缀，形如 `mcp__feishu__feishu_send_text`。参数细节见
 [TOOL-CONTRACT.md](docs/TOOL-CONTRACT.md)，逐个工具的说明与危险等级见 [MCP-TOOLS.md](docs/MCP-TOOLS.md)。
@@ -267,7 +267,7 @@ scope 未开通时，`FeishuApiError.missingScopes` 把需要开通的项拼进�
 ```
 packages/
 ├── core/          @yisang0910/core      API 客户端 · 类型 · 卡片模板（零第三方 HTTP 依赖）
-├── mcp/           @yisang0910/mcp       36 个工具的 MCP server
+├── mcp/           @yisang0910/mcp       43 个工具的 MCP server
 ├── gateway/       @yisang0910/gateway   卡片问答网关（HTTP + 可选长连接）
 └── dsh-plugin/    @yisang0910/plugin    DSH 设置页（在 Web UI 里填凭据、测连接）
 services/
@@ -303,7 +303,7 @@ docs/             架构 · 契约 · 工具清单 · 各模块说明
 | --- | --- |
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | 分层、关键取舍、已知限制 |
 | [TOOL-CONTRACT.md](docs/TOOL-CONTRACT.md) | 写工具前必读的实现契约 |
-| [MCP-TOOLS.md](docs/MCP-TOOLS.md) | 36 个工具逐个说明、危险等级、还缺什么 |
+| [MCP-TOOLS.md](docs/MCP-TOOLS.md) | 43 个工具逐个说明、危险等级、还缺什么 |
 | [MNEMON.md](docs/MNEMON.md) | 推荐搭配的记忆插件：为什么、怎么装、怎么验 |
 | [DEPLOY.md](docs/DEPLOY.md) | 部署到服务器 |
 | [GATEWAY.md](docs/GATEWAY.md) | 网关协议与部署 |

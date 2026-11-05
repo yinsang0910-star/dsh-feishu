@@ -327,6 +327,229 @@ export class FeishuClient {
     await this.request('DELETE', `/im/v1/pins/${encodeURIComponent(messageId)}`);
   }
 
+  // ═══════════════════════ 电子表格：写 ═══════════════════════
+
+  /**
+   * 工作表清单。写入前必须先拿 sheet_id —— spreadsheet_token 与 sheet_id 不是一回事，
+   * 这是「表格写不进去」最常见的原因。
+   */
+  async listSheetMeta(
+    spreadsheetToken: string,
+  ): Promise<Array<{ sheetId: string; title: string; index: number; rowCount: number; colCount: number }>> {
+    const data = await this.request<{ sheets?: Array<Record<string, unknown>> }>(
+      'GET',
+      `/sheets/v3/spreadsheets/${encodeURIComponent(spreadsheetToken)}/sheets/query`,
+    );
+    return (data.sheets ?? []).map((sheet) => {
+      const grid = (sheet['grid_properties'] ?? {}) as Record<string, unknown>;
+      return {
+        sheetId: String(sheet['sheet_id'] ?? ''),
+        title: String(sheet['title'] ?? ''),
+        index: Number(sheet['index'] ?? 0),
+        rowCount: Number(grid['row_count'] ?? 0),
+        colCount: Number(grid['column_count'] ?? 0),
+      };
+    });
+  }
+
+  private static sheetWriteResult(
+    data: Record<string, unknown>,
+    fallbackRange: string,
+  ): { updatedCells: number; updatedRange: string } {
+    const up = (data['updates'] ?? {}) as Record<string, unknown>;
+    return {
+      updatedCells: Number(up['updatedCells'] ?? 0),
+      updatedRange: String(up['updatedRange'] ?? fallbackRange),
+    };
+  }
+
+  /** 覆盖写指定区间（range 形如 "sheetId!A1:B2"） */
+  async writeSheetValues(
+    spreadsheetToken: string,
+    range: string,
+    values: unknown[][],
+  ): Promise<{ updatedCells: number; updatedRange: string }> {
+    const data = await this.request<Record<string, unknown>>(
+      'PUT',
+      `/sheets/v2/spreadsheets/${encodeURIComponent(spreadsheetToken)}/values`,
+      { body: { valueRange: { range, values } } },
+    );
+    return FeishuClient.sheetWriteResult(data, range);
+  }
+
+  /** 追加行（接在已有数据后面，不覆盖） */
+  async appendSheetValues(
+    spreadsheetToken: string,
+    range: string,
+    values: unknown[][],
+  ): Promise<{ updatedCells: number; updatedRange: string }> {
+    const data = await this.request<Record<string, unknown>>(
+      'POST',
+      `/sheets/v2/spreadsheets/${encodeURIComponent(spreadsheetToken)}/values_append`,
+      { body: { valueRange: { range, values } } },
+    );
+    return FeishuClient.sheetWriteResult(data, range);
+  }
+
+  // ═══════════════════════ 文档：写正文 ═══════════════════════
+
+  /** 往文档末尾追加若干段落（每段一个 text block） */
+  async appendDocumentText(documentId: string, paragraphs: string[]): Promise<{ blocks: number }> {
+    const children = paragraphs.map((text) => ({
+      block_type: 2,
+      text: { elements: [{ text_run: { content: text } }], style: {} },
+    }));
+    await this.request(
+      'POST',
+      `/docx/v1/documents/${encodeURIComponent(documentId)}/blocks/${encodeURIComponent(documentId)}/children`,
+      { query: { document_revision_id: -1 }, body: { children, index: -1 } },
+    );
+    return { blocks: children.length };
+  }
+
+  // ═══════════════════════ 消息：表情回应 / 合并转发 ═══════════════════════
+
+  /** 给消息加一个表情回应 */
+  async addReaction(messageId: string, emojiType: string): Promise<{ reactionId: string }> {
+    const data = await this.request<Record<string, unknown>>(
+      'POST',
+      `/im/v1/messages/${encodeURIComponent(messageId)}/reactions`,
+      { body: { reaction_type: { emoji_type: emojiType } } },
+    );
+    return { reactionId: String(data['reaction_id'] ?? '') };
+  }
+
+  /** 列出一条消息上的表情回应 */
+  async listReactions(
+    messageId: string,
+    pageSize = 50,
+  ): Promise<Array<{ reactionId: string; emojiType: string; operator: string }>> {
+    const data = await this.request<{ items?: Array<Record<string, unknown>> }>(
+      'GET',
+      `/im/v1/messages/${encodeURIComponent(messageId)}/reactions`,
+      { query: { page_size: pageSize, user_id_type: 'open_id' } },
+    );
+    return (data.items ?? []).map((it) => {
+      const type = (it['reaction_type'] ?? {}) as Record<string, unknown>;
+      const op = (it['operator'] ?? {}) as Record<string, unknown>;
+      return {
+        reactionId: String(it['reaction_id'] ?? ''),
+        emojiType: String(type['emoji_type'] ?? ''),
+        operator: String(op['operator_id'] ?? ''),
+      };
+    });
+  }
+
+  /** 撤掉一个表情回应 */
+  async deleteReaction(messageId: string, reactionId: string): Promise<void> {
+    await this.request(
+      'DELETE',
+      `/im/v1/messages/${encodeURIComponent(messageId)}/reactions/${encodeURIComponent(reactionId)}`,
+    );
+  }
+
+  /** 把多条消息合并转发成一个「会话记录」卡片 */
+  async mergeForward(
+    messageIdList: string[],
+    receiveId: string,
+    receiveIdType: 'chat_id' | 'open_id' | 'email' = 'chat_id',
+  ): Promise<SentMessage> {
+    const data = await this.request<Record<string, unknown>>('POST', '/im/v1/messages/merge_forward', {
+      query: { receive_id_type: receiveIdType },
+      body: { message_id_list: messageIdList, receive_id: receiveId },
+    });
+    return {
+      messageId: String(data['message_id'] ?? ''),
+      chatId: String(data['chat_id'] ?? ''),
+      msgType: 'merge_forward',
+    };
+  }
+
+  // ═══════════════════════ 群公告 ═══════════════════════
+
+  async getChatAnnouncement(chatId: string): Promise<{ content: string; revisionId: string }> {
+    const data = await this.request<Record<string, unknown>>(
+      'GET',
+      `/im/v1/chats/${encodeURIComponent(chatId)}/announcement`,
+      { query: { user_id_type: 'open_id' } },
+    );
+    return {
+      content: String(data['content'] ?? ''),
+      revisionId: String(data['revision_id'] ?? '0'),
+    };
+  }
+
+  /**
+   * 改群公告。
+   *
+   * 飞书的公告接口是「按 revision 提 patch」而不是「整段覆盖」：
+   * replace 会把现有内容换掉，append 接在末尾。拿不到 revision 时退回 0（新建）。
+   */
+  async setChatAnnouncement(
+    chatId: string,
+    content: string,
+    mode: 'replace' | 'append' = 'replace',
+  ): Promise<void> {
+    let revisionId = '0';
+    try {
+      revisionId = (await this.getChatAnnouncement(chatId)).revisionId || '0';
+    } catch {
+      revisionId = '0';
+    }
+    await this.request('PATCH', `/im/v1/chats/${encodeURIComponent(chatId)}/announcement`, {
+      body: {
+        revision_id: revisionId,
+        requests: [{ action: mode === 'append' ? 'insert_after' : 'replace', doc: content }],
+      },
+    });
+  }
+
+  // ═══════════════════════ 云空间权限成员 ═══════════════════════
+
+  /** 把一个协作者加进文档/文件夹（perm: view 可读 / edit 可编辑 / full_access 可管理） */
+  async addPermissionMember(
+    token: string,
+    type: string,
+    memberType: 'openid' | 'openchat' | 'userid' | 'email' | 'opendepartmentid',
+    memberId: string,
+    perm: 'view' | 'edit' | 'full_access' = 'view',
+  ): Promise<void> {
+    await this.request('POST', `/drive/v1/permissions/${encodeURIComponent(token)}/members`, {
+      query: { type },
+      body: { member_type: memberType, member_id: memberId, perm },
+    });
+  }
+
+  async listPermissionMembers(
+    token: string,
+    type: string,
+    pageSize = 50,
+  ): Promise<Array<{ memberType: string; memberId: string; perm: string }>> {
+    const data = await this.request<{ items?: Array<Record<string, unknown>> }>(
+      'GET',
+      `/drive/v1/permissions/${encodeURIComponent(token)}/members`,
+      { query: { type, page_size: pageSize } },
+    );
+    return (data.items ?? []).map((it) => ({
+      memberType: String(it['member_type'] ?? ''),
+      memberId: String(it['member_id'] ?? ''),
+      perm: String(it['perm'] ?? ''),
+    }));
+  }
+
+  async deletePermissionMember(
+    token: string,
+    type: string,
+    memberId: string,
+    memberType: string,
+  ): Promise<void> {
+    await this.request(
+      'DELETE',
+      `/drive/v1/permissions/${encodeURIComponent(token)}/members/${encodeURIComponent(memberId)}`,
+      { query: { type, member_type: memberType } },
+    );
+  }
+
   /** 改群信息：群名 / 描述 / 公告之外的基础设置 */
   async updateChat(
     chatId: string,

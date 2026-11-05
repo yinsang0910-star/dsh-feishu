@@ -1,6 +1,6 @@
 # MCP 工具全表
 
-`dsh-feishu` 的 MCP server 一共暴露 **36 个工具**，覆盖飞书 IM、群管理、云空间、文档、多维表格、电子表格、知识库、通讯录七个域。
+`dsh-feishu` 的 MCP server 一共暴露 **43 个工具**，覆盖飞书 IM、群管理、云空间、文档、多维表格、电子表格、知识库、通讯录七个域。
 
 工具名在客户端里带服务前缀，形如 `mcp__feishu__feishu_send_text`。前缀由 profile 里的 `serverName` 决定（本项目默认 `feishu`），改了前缀工具名跟着变。
 
@@ -41,7 +41,7 @@
 | 🔒 `feishu_chats` | 列出机器人所在的所有会话（群 + 单聊），返回 `chat_id` 与名字 |
 | 🔒 `feishu_members` | 列出某个会话的成员，返回名字 + `open_id` |
 
-## 五、群与消息管理（8）
+## 五、群与消息管理（11）
 
 | 工具 | 说明 |
 | --- | --- |
@@ -53,6 +53,9 @@
 | ⚠️ `feishu_chat_dissolve` | 解散群。**不可撤销**，群和消息一起消失，机器人必须是群主 |
 | 🔒 `feishu_chat_files` | 列群里发过的文件（对应群聊顶部「文件」标签页），带 `message_id`、文件名、大小、时间。要删文件就把它返回的 `message_id` 交给 `feishu_recall` |
 | ⚠️ `feishu_file_delete` | 删云空间里的文件 / 文档 / 表格 / 多维表格 / 空文件夹。参数是 `file_token`，**不是**消息的 `file_key` |
+| `feishu_reaction` | 给消息加表情回应 / 看谁回应了什么 / 撤掉。`action=add|list|remove`，`emoji_type` 用飞书表情名（`SMILE`、`THUMBSUP`、`DONE`） |
+| `feishu_merge_forward` | 把 2~50 条消息合并成一份「会话记录」卡片转发到别处，适合把一段讨论整体转给另一个人 |
+| `feishu_chat_announcement` | 读 / 改群公告。`action=get` 读，`action=set` 写（`mode=replace` 整段替换、`mode=append` 接在末尾）。需要机器人是群主或管理员 |
 
 > **为什么群文件要绕一圈**：飞书没有「群文件列表」这个 OpenAPI。群里的文件是挂在消息上的附件，所以 `feishu_chat_files` 的实现是翻最近的群消息、筛出 `file` / `media` / `audio` 类型再整理。删文件同理 —— 删的是那条消息。
 
@@ -67,7 +70,7 @@
 | ⚠️ `feishu_bitable_update` | 按 `record_id` 更新部分字段（只覆盖传了的字段） |
 | ⚠️ `feishu_bitable_delete` | 按 `record_id` 删一条记录。**不可撤销**，无回收站。需传 `confirm: true` |
 
-## 七、云空间 / 文档 / 表格 / 知识库（8）
+## 七、云空间 / 文档 / 表格 / 知识库（12）
 
 | 工具 | 说明 |
 | --- | --- |
@@ -78,6 +81,10 @@
 | ⚠️ `feishu_sheet_create` | 新建空电子表格，返回 `spreadsheet_token` 与分享链接 |
 | 🔒 `feishu_sheet_read` | 按 A1 区间读表格值（`Sheet1!A1:D20`、`Sheet1!A:A`），返回二维数组 |
 | 🔒 `feishu_wiki_spaces` / 🔒 `feishu_wiki_node` | 列知识库空间 / 查知识库节点（给 `space_id` 列根节点，给 `token` 查该节点） |
+| 🔒 `feishu_sheet_meta` | 列表格里的工作表，返回 `sheet_id`、标题、行列数。写值前用得上（`spreadsheet_token` ≠ `sheet_id`） |
+| ⚠️ `feishu_sheet_write` | 往表格写值：`mode=overwrite` 覆盖区间、`mode=append` 追加行。`range` 不带表名时自动取第一个工作表 |
+| ⚠️ `feishu_doc_append` | 往文档末尾追加段落（纯文本，每段一个 `text` block）。配合 `feishu_doc_create` 用 |
+| ⚠️ `feishu_permission_member` | 云文档协作者：`action=add` 加人（`view`/`edit`/`full_access`）、`list` 看权限、`remove` 移除 |
 
 ## 八、通讯录（1）
 
@@ -91,13 +98,11 @@
 
 | 能力 | 状态 |
 | --- | --- |
-| 电子表格写值 | 飞书写入接口要求先拿 `sheet_id`（`spreadsheet_token` 不等于 `sheet_id`），需要多一次元数据请求。目前只读 |
-| 文档写正文 | 需要按块构造 `children` 并处理 block 类型，复杂度高。目前只能建空文档 |
 | 群文件「列表」 | 飞书没有这个端点，用 `feishu_chat_files` 翻消息代替 |
-| 消息表情回应（reaction） | 端点存在（`im/v1/message_reaction`），尚未封装 |
-| 合并转发（merge_forward） | 端点存在，尚未封装 |
-| 群公告 / 群标签页 / 群菜单 | 端点存在（`chat_announcement`、`chat_tab`、`chat_menu_*`），尚未封装 |
-| 云空间权限成员（`permission_member`） | 端点存在，尚未封装 |
+| 文档块级编辑 | 目前只能往末尾追加纯文本段落（`feishu_doc_append`）。改文档中间的内容、插入表格/图片/标题层级需要按 `block_id` 操作，尚未封装 |
+| 表格样式与公式 | `feishu_sheet_write` 只写值，改不了样式、合并单元格、条件格式；写进去的字符串按文本存 |
+| 群标签页 / 群菜单 | 端点存在（`chat_tab`、`chat_menu_*`），尚未封装 |
+| 群成员禁言 / 撤回他人消息 | 端点在 `chat_moderation` 下，尚未封装 |
 
 这些不是遗漏，是按「agent 真的会用到的频率」排的优先级。要用哪个提 issue。
 

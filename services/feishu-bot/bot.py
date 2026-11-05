@@ -148,6 +148,7 @@ INFO = """直接说要做什么就行，我会转给 agent 工作站上的 DSH�
 /额度    模型用量还剩多少
 
 管记忆与项目：
+/work    当前工作区是哪个目录、多少文件、有没有记忆
 /项目    看看有哪些工作区，可以切过去（/cd 名字）
 /新      清空我这份记忆，从头开始（话题换了就用它）
 
@@ -874,7 +875,7 @@ def task_brief(open_id):
         lines.append("▶ 正在跑：%s" % (cur.text or "")[:56])
         lines.append("  已用 %s · 第 %d 步 · 工作区 %s"
                      % (_dur(_seconds_of(cur)), max(cur.tool_n, 0),
-                        cur.cwd.rstrip("/").rsplit("/", 1)[-1] or cur.cwd))
+                        _short_cwd(cur.cwd)))
     else:
         lines.append("现在没在跑。")
     busy = _running_count()
@@ -1027,19 +1028,22 @@ PROMPT_TMPL = (
     "  3) 回复里只写「已发送：文件名（大小）」这样的结论。\n"
     "不要用工作区路径代替文件（用户拿不到），也不要把整篇内容粘贴出来代替文件。\n"
     "pushfile 支持多个文件：pushfile a.docx b.pdf \"作业打包\"。\n\n"
-    "【飞书能力】你有一个飞书 MCP，工具名以 mcp__feishu__ 开头（共 36 个）。常用的：\n"
+    "【飞书能力】你有一个飞书 MCP，工具名以 mcp__feishu__ 开头（共 43 个）。常用的：\n"
     "  feishu_recent            读最近消息（图片/文件消息也在里面）\n"
     "  feishu_chats / members   列机器人所在的群 / 读群成员\n"
     "  feishu_send_text / send_card / send_file / send_image / reply   往外发\n"
     "  feishu_recall            撤回自己发的消息；删群里的旧文件也靠它（文件挂在消息上）\n"
     "  feishu_chat_files        列群里的文件（飞书没有群文件列表接口，它是翻消息筛出来的，\n"
     "                           返回 message_id，可以直接接着 feishu_recall 删）\n"
-    "  feishu_forward / pin     转发、置顶\n"
+    "  feishu_forward / pin / merge_forward     转发、置顶、把多条合并成一份记录转发\n"
+    "  feishu_reaction          给消息加表情回应（最轻的「收到」），也能看谁回应了什么\n"
+    "  feishu_chat_announcement 读/改群公告（要群主或管理员）\n"
     "  feishu_chat_update / create / dissolve   改群名和权限、建群、解散群\n"
     "  feishu_file_delete       删云空间里的文件（参数是 file_token，不是消息的 file_key）\n"
     "  feishu_bitable_*         多维表格：列表/字段/记录/新增/更新/删除\n"
-    "  feishu_sheet_create / read               电子表格：新建、按区间读值\n"
-    "  feishu_doc_read / doc_blocks / doc_create  文档：读正文、读分块结构、新建\n"
+    "  feishu_sheet_create / read / meta / write  电子表格：新建、按区间读值、看工作表、写值/追加行\n"
+    "  feishu_doc_read / doc_blocks / doc_create / doc_append  文档：读正文、读分块、新建、往末尾追加段落\n"
+    "  feishu_permission_member 云文档协作者：加人/看权限/移除\n"
     "  feishu_wiki_spaces / wiki_node           知识库\n"
     "  feishu_user_lookup       邮箱/手机号查 open_id\n"
     "不确定自己有没有某个能力时，先看工具清单再回答，别直接说「我没有接口」；\n"
@@ -1084,6 +1088,24 @@ def _running_count():
 
 def cur_cwd(open_id):
     return STATE["cwd"].get(open_id) or CONF["agent_cwd"]
+
+
+def _short_cwd(cwd):
+    """工作区显示：去掉 agent_root 前缀，保留层级。
+
+    根目录显示 work，子目录显示 work/negative film —— 一眼能看出是哪个目录，
+    比只留最后一段（negative film）清楚，也不会像绝对路径那样把脚注撑爆。
+    """
+    root = (CONF.get("agent_root") or "").rstrip("/")
+    p = (cwd or "").rstrip("/")
+    if not p:
+        return "?"
+    name = root.rsplit("/", 1)[-1] or root
+    if root and p == root:
+        return name
+    if root and p.startswith(root + "/"):
+        return name + p[len(root):]
+    return p
 
 
 def sess_key(open_id, cwd):
@@ -1804,7 +1826,7 @@ def build_progress_card(task):
             "tag": "plain_text",
             "content": "已用 %s · 第 %d 步 · %s%s"
                        % (_dur(_seconds_of(task)), max(total, 1),
-                          task.cwd.rstrip("/").rsplit("/", 1)[-1] or task.cwd,
+                          _short_cwd(task.cwd),
                           auto_note),
         }],
     })
@@ -1839,7 +1861,7 @@ def build_final_card(task, ok, body, note=""):
             "tag": "plain_text",
             "content": "用时 %s · %d 步 · %d 轮 · 工作区 %s"
                        % (_dur(_seconds_of(task)), max(task.steps, 0), len(task.steps_log),
-                          task.cwd.rstrip("/").rsplit("/", 1)[-1] or task.cwd),
+                          _short_cwd(task.cwd)),
         }],
     })
     return {
@@ -2967,6 +2989,32 @@ def handle_inner(data: P2ImMessageReceiveV1):
             reply(head + do_status())
             return
 
+        if text in ("/work", "/工作区", "/where", "/cwd"):
+            here = cur_cwd(sender)
+            sid = STATE["sessions"].get(sess_key(sender, here)) or ""
+            code, out = run_agent(
+                'p=%s; if [ -d "$p" ]; then '
+                'd=$(du -sh "$p" 2>/dev/null | cut -f1); '
+                'n=$(find "$p" -maxdepth 1 -type f 2>/dev/null | wc -l); '
+                'echo "OK|$d|$n"; else echo "NO||"; fi'
+                % shlex.quote(here),
+                timeout=40,
+            )
+            body = ["工作区 %s" % here]
+            if "OK|" in out:
+                parts = [x for x in out.splitlines() if x.startswith("OK|")][0].split("|")
+                body.append("  顶层 %s 个文件，共 %s" % (parts[2].strip(), parts[1] or "?"))
+                body.append("  记忆：%s" % ("%s（这个目录接着上次的聊）" % sid if sid
+                                            else "还没有，下一句会在这里新开一份"))
+            else:
+                body.append("  这个目录现在不存在了（被删或改名），下一句会退回根目录跑。")
+                body.append("  用 /cd <名字> 换一个，或 /项目 看还有哪些。")
+            body.append("")
+            body.append("换地方：/cd <名字> 切到子目录，/cd work 回根，/项目 看全部。")
+            body.append("每个目录一份独立的 DSH 记忆，互不串。")
+            deliver(chat_id, "\n".join(body))
+            return
+
         if text in ("/ls", "/projects", "/项目"):
             root = CONF["agent_root"]
             code, out = run_agent(
@@ -2991,7 +3039,8 @@ def handle_inner(data: P2ImMessageReceiveV1):
                 lines.append("%s %s  %s  %s 个文件" % (mark, n, sz, fc.strip()))
             lines.append("")
             lines.append("当前：%s" % here)
-            lines.append("切换：/cd <项目名>；每个项目各有一份 DSH 记忆。")
+            lines.append("切换：/cd <项目名>（/cd work 回根）；每个目录各有一份 DSH 记忆。")
+            lines.append("细节：/work 看当前工作区。")
             deliver(chat_id, "\n".join(lines))
             return
 

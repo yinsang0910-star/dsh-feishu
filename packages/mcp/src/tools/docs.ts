@@ -832,6 +832,219 @@ export function registerDocsTools(server: McpServer, ctx: ToolContext): void {
       }
     },
   );
+
+  // ───────────────────────── 电子表格：工作表清单 ─────────────────────────
+
+  server.registerTool(
+    'feishu_sheet_meta',
+    {
+      title: '看电子表格有哪些工作表',
+      description:
+        '列出表格里每个工作表的 sheet_id、标题、行列数。' +
+        '写值前先看这个：飞书的写入接口要 sheet_id，而表格链接里给的是 spreadsheet_token，两者不是一回事。' +
+        'feishu_sheet_write 不带 sheet 前缀时会自动取第一个工作表，所以简单场景可以跳过这一步。',
+      inputSchema: {
+        spreadsheet_token: z.string().min(1).describe('电子表格 token（链接里 /sheets/ 后面那串）。'),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    },
+    async ({ spreadsheet_token }) => {
+      try {
+        const token = spreadsheet_token.trim();
+        const sheets = await ctx.client.listSheetMeta(token);
+        if (!sheets.length) return ok(`表格 ${token} 里没有工作表（或应用看不到）。`, { sheets: [] });
+        const lines = sheets.map(
+          (s, i) =>
+            `${i + 1}. ${s.title}　sheet_id=${s.sheetId}　${s.rowCount} 行 × ${s.colCount} 列`,
+        );
+        return ok(`表格 ${token} 有 ${sheets.length} 个工作表：\n${lines.join('\n')}`, { sheets });
+      } catch (err) {
+        return fail(
+          describeError(
+            err,
+            '看工作表',
+            '需要在开放平台开通 sheets:spreadsheet 权限，并确认应用对该表格有访问权限。',
+          ),
+        );
+      }
+    },
+  );
+
+  // ───────────────────────── 电子表格：写值 ─────────────────────────
+
+  server.registerTool(
+    'feishu_sheet_write',
+    {
+      title: '往电子表格写值 / 追加行',
+      description:
+        '把二维数组写进表格。range 写 "Sheet1!A1:B2"（带表名）或只写 "A1:B2"（默认第一个工作表）。' +
+        'mode=overwrite 覆盖区间内原有的值；mode=append 接在已有数据末尾往下追加（不覆盖）。' +
+        'values 是行 × 列：[[1,"甲"],[2,"乙"]] 表示两行两列。空字符串写空格，null 会留空。' +
+        '只写值，改不了样式、合并单元格、公式（写进去的字符串会被当文本）。',
+      inputSchema: {
+        spreadsheet_token: z.string().min(1).describe('电子表格 token。'),
+        range: z.string().min(1).describe('A1 区间，如 "Sheet1!A1:B2" 或 "A1:B2"。'),
+        values: z
+          .array(z.array(z.union([z.string(), z.number(), z.boolean(), z.null()])))
+          .min(1)
+          .describe('二维数组：外层是行，内层是列。'),
+        mode: z
+          .enum(['overwrite', 'append'])
+          .optional()
+          .describe('overwrite 覆盖（默认），append 追加到已有数据末尾。'),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
+    },
+    async ({ spreadsheet_token, range, values, mode }) => {
+      try {
+        const token = spreadsheet_token.trim();
+        let rng = range.trim();
+        if (!rng.includes('!')) {
+          const sheets = await ctx.client.listSheetMeta(token);
+          const first = sheets[0];
+          if (!first) return fail(`表格 ${token} 里没有工作表，先 feishu_sheet_meta 看一眼。`);
+          rng = `${first.title}!${rng}`;
+        }
+        const useAppend = (mode ?? 'overwrite') === 'append';
+        const res = useAppend
+          ? await ctx.client.appendSheetValues(token, rng, values)
+          : await ctx.client.writeSheetValues(token, rng, values);
+        const rows = values.length;
+        const cols = values.reduce((m, r) => Math.max(m, r.length), 0);
+        ctx.log('feishu_sheet_write', { rng, rows, cols, append: useAppend });
+        return ok(
+          `已${useAppend ? '追加' : '写入'} ${rows} 行 × ${cols} 列到 ${res.updatedRange || rng}` +
+            `（实际更新 ${res.updatedCells} 个单元格）。`,
+          {
+            spreadsheet_token: token,
+            range: res.updatedRange || rng,
+            mode: useAppend ? 'append' : 'overwrite',
+            updated_cells: res.updatedCells,
+          },
+        );
+      } catch (err) {
+        return fail(
+          describeError(
+            err,
+            '写表格',
+            '需要 sheets:spreadsheet 权限，且应用对该表格有编辑权限（共享给应用或放进可访问空间）。',
+          ),
+        );
+      }
+    },
+  );
+
+  // ───────────────────────── 文档：追加正文 ─────────────────────────
+
+  server.registerTool(
+    'feishu_doc_append',
+    {
+      title: '往文档末尾追加正文',
+      description:
+        '在已有文档最后追加若干段落（每个字符串一段）。配合 feishu_doc_create 建空文档后往里写。' +
+        '只能追加纯文本段落：加粗、表格、图片、标题层级这些富文本结构目前不支持。' +
+        '要改文档中间的内容请用 feishu_doc_blocks 找到块再处理（尚未开放块级编辑）。',
+      inputSchema: {
+        document_id: z.string().min(1).describe('文档 id（docx 链接里 /docx/ 后面那串）。'),
+        paragraphs: z
+          .array(z.string())
+          .min(1)
+          .describe('要追加的段落，每个元素一段；空字符串会写成空行。'),
+      },
+      annotations: { readOnlyHint: false, openWorldHint: true },
+    },
+    async ({ document_id, paragraphs }) => {
+      try {
+        const id = document_id.trim();
+        const res = await ctx.client.appendDocumentText(id, paragraphs);
+        ctx.log('feishu_doc_append', { id, blocks: res.blocks });
+        return ok(`已往文档 ${id} 末尾追加 ${res.blocks} 段。`, {
+          document_id: id,
+          blocks: res.blocks,
+        });
+      } catch (err) {
+        return fail(
+          describeError(
+            err,
+            '追加文档正文',
+            '需要 docx:document 权限（写权限），且应用对该文档有编辑权限。',
+          ),
+        );
+      }
+    },
+  );
+
+  // ───────────────────────── 云空间：权限成员 ─────────────────────────
+
+  server.registerTool(
+    'feishu_permission_member',
+    {
+      title: '文档/文件夹的协作者（加人、看谁有权限、移除）',
+      description:
+        '管云文档的协作者。action=add 把一个人加进协作者（perm=view 可读 / edit 可编辑 / full_access 可管理）；' +
+        'action=list 看现在有哪些人、各自什么权限；action=remove 移除一个人。' +
+        'member_type=openid 时 member_id 传 open_id（ou_ 开头），先 feishu_user_lookup 拿到。' +
+        '注意 token 是云文档 token，不是消息附件。',
+      inputSchema: {
+        action: z.enum(['add', 'list', 'remove']).describe('add 加人、list 看权限、remove 移除。'),
+        token: z.string().min(1).describe('云文档/文件夹 token。'),
+        type: z
+          .enum(['docx', 'doc', 'sheet', 'bitable', 'file', 'folder', 'mindnote', 'slides'])
+          .optional()
+          .describe('资源类型，默认 docx。'),
+        member_type: z
+          .enum(['openid', 'openchat', 'userid', 'email', 'opendepartmentid'])
+          .optional()
+          .describe('action=add/remove 时用，默认 openid。'),
+        member_id: z.string().optional().describe('action=add/remove 时用：对方的 open_id 等。'),
+        perm: z
+          .enum(['view', 'edit', 'full_access'])
+          .optional()
+          .describe('action=add 时的权限，默认 view。'),
+      },
+      annotations: { readOnlyHint: false, openWorldHint: true },
+    },
+    async ({ action, token, type, member_type, member_id, perm }) => {
+      try {
+        const tk = token.trim();
+        const resType = type ?? 'docx';
+
+        if (action === 'list') {
+          const items = await ctx.client.listPermissionMembers(tk, resType);
+          if (!items.length) return ok(`资源 ${tk} 目前没有协作者（只有所有者）。`, { items: [] });
+          const lines = items.map(
+            (it, i) => `${i + 1}. ${it.memberType} ${it.memberId}　${it.perm}`,
+          );
+          return ok(`资源 ${tk} 有 ${items.length} 个协作者：\n${lines.join('\n')}`, { items });
+        }
+
+        const mid = (member_id ?? '').trim();
+        if (!mid) return fail(`action=${action} 需要 member_id。`);
+        const mtype = member_type ?? 'openid';
+
+        if (action === 'add') {
+          const usePerm = perm ?? 'view';
+          await ctx.client.addPermissionMember(tk, resType, mtype, mid, usePerm);
+          return ok(`已把 ${mid} 加为 ${tk} 的协作者（${usePerm}）。`, {
+            token: tk,
+            member_id: mid,
+            perm: usePerm,
+          });
+        }
+
+        await ctx.client.deletePermissionMember(tk, resType, mid, mtype);
+        return ok(`已把 ${mid} 从 ${tk} 的协作者里移除。`, { token: tk, member_id: mid });
+      } catch (err) {
+        return fail(
+          describeError(
+            err,
+            '协作者管理',
+            '需要 drive:drive 权限，且机器人对该文档有管理权限（full_access）。',
+          ),
+        );
+      }
+    },
+  );
 }
 
 /**

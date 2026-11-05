@@ -294,4 +294,143 @@ export function registerChatTools(server: McpServer, ctx: ToolContext): void {
       }
     },
   );
+
+  // ───────────────────────── 表情回应 ─────────────────────────
+
+  server.registerTool(
+    'feishu_reaction',
+    {
+      title: '给消息加表情回应 / 查看 / 撤掉',
+      description:
+        '表情回应是飞书里最轻的「我看到了 / 收到 / 干完了」信号，不占聊天版面。' +
+        'action=add 加一个（emoji_type 用飞书的表情名，如 SMILE、THUMBSUP、DONE、OK、HEART）；' +
+        'action=list 看这条消息上有谁回应了什么（返回 reaction_id，撤掉时要用）；' +
+        'action=remove 撤掉一个（只能撤机器人自己加的）。',
+      inputSchema: {
+        action: z.enum(['add', 'list', 'remove']).describe('add 加、list 看、remove 撤。'),
+        message_id: z.string().describe('消息 id（om_ 开头）。'),
+        emoji_type: z
+          .string()
+          .optional()
+          .describe('action=add 必填，飞书表情名，如 SMILE / THUMBSUP / DONE / OK / HEART。'),
+        reaction_id: z
+          .string()
+          .optional()
+          .describe('action=remove 必填，来自 action=list 返回的 reaction_id。'),
+      },
+      annotations: { readOnlyHint: false, openWorldHint: true },
+    },
+    async ({ action, message_id, emoji_type, reaction_id }) => {
+      try {
+        const mid = message_id.trim();
+        if (!mid) return fail('message_id 为空。');
+
+        if (action === 'add') {
+          const emoji = (emoji_type ?? '').trim().toUpperCase();
+          if (!emoji) return fail('action=add 需要 emoji_type，例如 SMILE。');
+          const r = await ctx.client.addReaction(mid, emoji);
+          ctx.log('feishu_reaction add', { mid, emoji });
+          return ok(`已给消息 ${mid} 加上 ${emoji} 回应。`, { reaction_id: r.reactionId });
+        }
+
+        if (action === 'list') {
+          const items = await ctx.client.listReactions(mid);
+          if (!items.length) return ok(`消息 ${mid} 上还没有任何表情回应。`, { items: [] });
+          const lines = items.map(
+            (it, i) => `${i + 1}. ${it.emojiType}　by ${it.operator}　(${it.reactionId})`,
+          );
+          return ok(`消息 ${mid} 上有 ${items.length} 个回应：\n${lines.join('\n')}`, { items });
+        }
+
+        const rid = (reaction_id ?? '').trim();
+        if (!rid) return fail('action=remove 需要 reaction_id（先用 action=list 查）。');
+        await ctx.client.deleteReaction(mid, rid);
+        return ok(`已撤掉消息 ${mid} 上的回应 ${rid}。`, { reaction_id: rid });
+      } catch (err) {
+        return fail(describeError(err, '表情回应'));
+      }
+    },
+  );
+
+  // ───────────────────────── 合并转发 ─────────────────────────
+
+  server.registerTool(
+    'feishu_merge_forward',
+    {
+      title: '把多条消息合并成一份记录转发',
+      description:
+        '把 2~50 条消息打包成一张「会话记录」卡片发到别处，适合「把这段讨论转给另一个人看」。' +
+        '和 feishu_forward 的区别：forward 是一条一条转，merge_forward 是合成一份带来源的摘要。',
+      inputSchema: {
+        message_ids: z
+          .array(z.string())
+          .min(2)
+          .max(50)
+          .describe('要合并的消息 id 列表（om_ 开头），2~50 条。'),
+        receive_id: z.string().describe('发到哪里：chat_id（oc_ 开头）或 open_id（ou_ 开头）。'),
+        receive_id_type: z
+          .enum(['chat_id', 'open_id', 'email'])
+          .optional()
+          .describe('receive_id 的类型，默认 chat_id。'),
+      },
+      annotations: { readOnlyHint: false, openWorldHint: true },
+    },
+    async ({ message_ids, receive_id, receive_id_type }) => {
+      try {
+        const ids = message_ids.map((x) => x.trim()).filter(Boolean);
+        if (ids.length < 2) return fail('至少给两条消息 id。');
+        const sent = await ctx.client.mergeForward(ids, receive_id.trim(), receive_id_type ?? 'chat_id');
+        ctx.log('feishu_merge_forward', { count: ids.length });
+        return ok(`已把 ${ids.length} 条消息合并转发到 ${receive_id}（新消息 ${sent.messageId}）。`, {
+          message_id: sent.messageId,
+          count: ids.length,
+        });
+      } catch (err) {
+        return fail(describeError(err, '合并转发'));
+      }
+    },
+  );
+
+  // ───────────────────────── 群公告 ─────────────────────────
+
+  server.registerTool(
+    'feishu_chat_announcement',
+    {
+      title: '读 / 改群公告',
+      description:
+        '群公告是群顶部那条所有人都能看到的说明。action=get 读现有内容；' +
+        'action=set 改写（mode=replace 整段替换，mode=append 接在末尾）。' +
+        '改公告需要机器人是群主或管理员。',
+      inputSchema: {
+        action: z.enum(['get', 'set']).describe('get 读、set 写。'),
+        chat_id: chatIdSchema,
+        content: z.string().optional().describe('action=set 必填，新公告正文（支持纯文本与换行）。'),
+        mode: z
+          .enum(['replace', 'append'])
+          .optional()
+          .describe('action=set 时用：replace 整段替换（默认），append 接在末尾。'),
+      },
+      annotations: { readOnlyHint: false, openWorldHint: true },
+    },
+    async ({ action, chat_id, content, mode }) => {
+      try {
+        const cid = chat_id.trim();
+        if (action === 'get') {
+          const a = await ctx.client.getChatAnnouncement(cid);
+          if (!a.content.trim()) return ok(`群 ${cid} 现在没有公告。`, { content: '' });
+          return ok(`群 ${cid} 的公告：\n\n${a.content}`, { content: a.content });
+        }
+        const text = (content ?? '').trim();
+        if (!text) return fail('action=set 需要 content。');
+        const useMode = mode ?? 'replace';
+        await ctx.client.setChatAnnouncement(cid, text, useMode);
+        return ok(
+          `已${useMode === 'append' ? '追加' : '更新'}群 ${cid} 的公告（${text.length} 字）。`,
+          { chat_id: cid, mode: useMode },
+        );
+      } catch (err) {
+        return fail(describeError(err, '群公告'));
+      }
+    },
+  );
 }
