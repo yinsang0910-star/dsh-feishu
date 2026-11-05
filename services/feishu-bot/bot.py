@@ -26,6 +26,7 @@
 """
 
 import base64
+import uuid
 import collections
 import io
 import json
@@ -34,6 +35,7 @@ import os
 import re
 import shlex
 import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -52,6 +54,14 @@ from lark_oapi.api.im.v1 import (
     PatchMessageRequestBody,
     P2ImMessageReceiveV1,
 )
+
+# 通道客户端（同目录 channel.py）：把消息投给 agent 机上 dsh-feishu-channel
+# 插件的原生存件箱。文件不在 / 插件没开时，channel_mod 为 None，全走老路径。
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+try:
+    import channel as channel_mod  # noqa: E402
+except Exception:  # pragma: no cover - 缺文件不影响老路径
+    channel_mod = None
 
 APP_ID = os.environ.get("FEISHU_APP_ID", "").strip()
 APP_SECRET = os.environ.get("FEISHU_APP_SECRET", "").strip()
@@ -111,6 +121,12 @@ DEFAULTS = {
     # 我们收到 card.action 后把 answer POST 过去，MCP 那边的 feishu_ask 就能秒回。
     "gateway_url": "http://192.168.1.100:18642",
     "gateway_token": "",
+    # 飞书原生通道（dsh-feishu-channel 插件）：把消息投进常驻 agent 的原生
+    # 收件箱（next-turn / next-step），而不是每条消息 spawn 一个 dsh-task。
+    # off = 完全走老路径（回滚开关）；插件不可达时也会自动退回老路径，消息不丢。
+    "channel_mode": "off",
+    "channel_url": "http://192.168.1.205:8788",
+    "channel_token": "",
 }
 
 _LOCK = threading.RLock()
@@ -125,6 +141,10 @@ INFO = """直接说要做什么就行，我会转给 agent 工作站上的 DSH�
 看状态：
 /状态    在跑什么、排队几个、用的什么脑子
 /排队    排了哪些活；/清队 清空
+
+跑着的时候还能补一句（不用等它干完）：
+  直接说话 = 插话，下一步就生效    /下一轮 xxx = 排到下一轮再说
+  /备注 xxx = 只补背景不打断       卡片上直接有 停 / 撤回 / 清队 按钮
 /额度    模型用量还剩多少
 
 管记忆与项目：
@@ -220,6 +240,7 @@ def who_name(open_id):
 client = lark.Client.builder().app_id(APP_ID).app_secret(APP_SECRET).build()
 
 BOT_OPEN_ID = ""
+BOT_NAME = ""            # 机器人自己叫什么（"G2 Agent"），用来认手打的 @
 
 
 def _http_json(url, headers=None, body=None):
@@ -270,7 +291,9 @@ def fetch_bot_open_id():
             headers={"Authorization": "Bearer " + tok},
         )
         BOT_OPEN_ID = (info.get("bot") or {}).get("open_id", "") or ""
-        log.info("bot open_id=%s name=%s", BOT_OPEN_ID, (info.get("bot") or {}).get("app_name"))
+        global BOT_NAME
+        BOT_NAME = (info.get("bot") or {}).get("app_name", "") or ""
+        log.info("bot open_id=%s name=%s", BOT_OPEN_ID, BOT_NAME)
     except Exception:
         log.exception("取 bot 自身 open_id 失败，改为「任意 @ 即响应」")
 
@@ -503,6 +526,12 @@ def fetch_resource(message_id, file_key, rtype, timeout=120):
         return None, str(e)
 
 
+# ssh 到 agent 的每次附件传输都是一条独立连接，sshd 默认 MaxStartups 10:30:100 ——
+# 未认证连接超过 10 条开始随机丢弃，20 张图同时冲进去实测约 15% 被
+# "kex_exchange_identification: Connection reset by peer" 拒掉。限到 4 条并发。
+_PUSH_SEM = threading.BoundedSemaphore(4)
+
+
 def push_attachment(cwd, filename, data):
     """把附件写到 agent 的工作目录里。字节以 base64 过 ssh，避免二进制走文本管道的坑。"""
     sub = (CONF.get("attachment_dir") or ".feishu-inbox").strip("/")
@@ -510,10 +539,22 @@ def push_attachment(cwd, filename, data):
     path = "%s/%s" % (target, filename)
     cmd = ("mkdir -p %s && base64 -d > %s && stat -c '%%s' %s"
            % (shlex.quote(target), shlex.quote(path), shlex.quote(path)))
-    code, out = run_remote(
-        CONF["agent_host"], CONF["agent_user"], CONF["agent_key"],
-        cmd, timeout=180, stdin_text=base64.b64encode(data).decode("ascii"),
-    )
+    payload = base64.b64encode(data).decode("ascii")
+    code, out = 1, ""
+    for attempt in range(1, 4):
+        _PUSH_SEM.acquire()
+        try:
+            code, out = run_remote(
+                CONF["agent_host"], CONF["agent_user"], CONF["agent_key"],
+                cmd, timeout=180, stdin_text=payload,
+            )
+        finally:
+            _PUSH_SEM.release()
+        if code == 0:
+            break
+        # MaxStartups 是随机丢弃，重试大概率就过了
+        log.warning("附件写入第 %d 次失败（exit=%d）：%s", attempt, code, out[:120])
+        time.sleep(1.2 * attempt)
     if code != 0:
         return "", "写不进工作站（exit=%d）：%s" % (code, out[:200])
     log.info("附件已落到 %s（%s 字节）", path, out.strip())
@@ -536,8 +577,7 @@ def parse_attachment(msg):
         key = content.get("file_key") or ""
         if not key:
             return None
-        name = (content.get("file_name") or "").strip() or (
-            "%s-%s" % (mt, datetime.now().strftime("%Y%m%d-%H%M%S")))
+        name = (content.get("file_name") or "").strip() or mt
         return {"kind": "file", "rtype": "file", "key": key, "name": name}
     return None
 
@@ -590,7 +630,11 @@ def materialize_attachment(chat_id, open_id, message_id, att, caption):
     name = att.get("name") or ""
     if "." not in name.rsplit("/", 1)[-1]:
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        stem = name or ("img-%s" % stamp if att["kind"] == "image" else "file-%s" % stamp)
+        # 时间戳只到秒，连发时同一秒内的图会拿到同一个名字、后到覆盖先到
+        # （实测 20 张并发只落地 2 个文件）。名字本身就带的（如 screenshot.png）
+        # 重复发也会撞，所以一律追加随机后缀。
+        base = name or ("img" if att["kind"] == "image" else "file")
+        stem = "%s-%s-%s" % (base, stamp, uuid.uuid4().hex[:6])
         name = "%s.%s" % (stem, _guess_ext(data))
     name = re.sub(r"[^\w.\-]+", "_", name)[-80:] or "attach.bin"
 
@@ -1720,7 +1764,7 @@ def _at_el(open_id):
 def build_progress_card(task):
     """整块进度卡：标题 + 任务 + 最近几步 + 脚注。永远只有这一条消息。"""
     total = len(task.steps_log)
-    tail = task.steps_log[-5:]
+    tail = task.steps_log[-3:]   # 只留最近 3 步：列满屏没人看，还挤掉正文
     rows = []
     if total > len(tail):
         rows.append("_… 前面 %d 步已完成_" % (total - len(tail)))
@@ -2010,7 +2054,11 @@ def worker_body(task):
                 send(task.chat_id, "%s 好了，在上一条卡片里（用时 %s）"
                      % ("✅" if ok else "⛔", _dur(dur)), at=task.open_id)
             return
-    deliver(task.chat_id, body, title="结果", at=task.open_id)
+    # 卡片 patch 失败（或回答超过 max_inline_lines）时也发卡片：
+    # text 消息里 **加粗**、`代码`、列表都不渲染，就是一大坨灰底纯文本。
+    tail_body = body if len(body) <= 6000 else body[:6000] + "\n\n_（太长，先截到这里）_"
+    if not send_card(task.chat_id, build_final_card(task, ok, tail_body)):
+        deliver(task.chat_id, body, title="结果", at=task.open_id)
 
 
 def watchdog(task):
@@ -2055,6 +2103,256 @@ def _launch(open_id, chat_id, text, cwd, approved=False, label=None):
     threading.Thread(target=worker, args=(task,), daemon=True).start()
 
 
+# ─────────────────────────── 通道模式（新路径） ───────────────────────────
+#
+# 老路径：每条消息 spawn 一个 `dsh-task --json` 子进程 → stdin 一关就再也塞不进去，
+#         所以"补充指令"只能排队，队列只活在这个 bot 的内存里，卡片也只有一张静态文本。
+# 新路径：把消息投给 agent 机上 dsh-feishu-channel 插件的原生存件箱
+#         （next-turn / next-step），由 DSH 自己在轮次边界和 step 边界领取。
+#         排队位置、流式文本、轮次号全部读真值，不再是估的。
+#
+# 两条路并存由 CONF["channel_mode"] 控制，插件不可达时自动退回老路径，消息不会丢。
+
+# 只发一个 @ 时，接他上一条说过的话（飞书里很常见：先打字，再补一个 @）
+_LAST_MSG = {}          # "chat_id|open_id" -> {"text": str, "ts": float}
+_LAST_MSG_TTL = 180     # 秒；超过这个时间就不接了，免得接到风马牛不相及的话
+
+CHANNEL_CARDS = {}          # session key -> 卡片 message_id
+_CHANNEL_CARDS_LOCK = threading.Lock()
+_CHANNEL_FAILS = {}         # session key -> 连续 PATCH 失败次数
+
+# /插话 = 下一步生效（steer）；/下一轮 = 排到下一轮（followup）；
+# /备注 = 只补背景不唤醒（inject）。不写「排队」做别名 —— /排队 是查队列。
+INTENT_ALIAS = {
+    "steer": "steer", "插话": "steer", "插入": "steer",
+    "followup": "followup", "下一轮": "followup",
+    "inject": "inject", "背景": "inject", "备注": "inject",
+}
+
+
+def channel_on():
+    """通道可用吗（插件装了、模式开了、客户端拿到了）。"""
+    if not channel_mod:
+        return False
+    if str(CONF.get("channel_mode") or "off").lower() not in ("on", "1", "true", "yes"):
+        return False
+    return channel_mod.get() is not None
+
+
+def channel_key_of(msg, chat_id=""):
+    """从飞书消息对象算会话键（与插件侧 sessionkey.js 一致）。"""
+    if not channel_mod:
+        return ""
+    thread_id = getattr(msg, "thread_id", "") or ""
+    root_id = getattr(msg, "root_id", "") or ""
+    tenant = getattr(msg, "tenant_key", "") or "default"
+    cid = chat_id or getattr(msg, "chat_id", "") or ""
+    return channel_mod.session_key(cid, thread_id, root_id, tenant)
+
+
+def on_channel_view(view):
+    """插件的视图快照 → 一张会自己更新的卡片。
+
+    只做两件事：同一条会话永远改同一张卡；卡片过期（飞书 PATCH 有 14 天上限）
+    或者被删了就重建一张。
+    """
+    if not isinstance(view, dict):
+        return
+    key = view.get("key") or ""
+    chat_id = view.get("chatId") or ""
+    card = view.get("card")
+    if not key or not card or not chat_id:
+        return
+    with _CHANNEL_CARDS_LOCK:
+        mid = CHANNEL_CARDS.get(key)
+        fails = _CHANNEL_FAILS.get(key, 0)
+    if mid and card_patch(mid, card):
+        with _CHANNEL_CARDS_LOCK:
+            _CHANNEL_FAILS[key] = 0
+        return
+    # 只有连续失败够多次才重建，避免 PATCH 抖动把群里刷成一片新卡片
+    with _CHANNEL_CARDS_LOCK:
+        _CHANNEL_FAILS[key] = fails + 1
+        rebuild = (not mid) or fails >= 2
+    if not rebuild:
+        return
+    new_mid = card_create(chat_id, card)
+    if new_mid:
+        with _CHANNEL_CARDS_LOCK:
+            CHANNEL_CARDS[key] = new_mid
+            _CHANNEL_FAILS[key] = 0
+        if mid:
+            log.info("通道卡片重建 key=%s %s → %s", key, mid, new_mid)
+
+
+def build_reply_card(text, reasoning="", effort="auto", turn=0, open_id=""):
+    """把 agent 的回答做成卡片。
+
+    为什么必须是卡片：text 类型消息里 `**加粗**`、`# 标题` 这些 markdown 是不渲染的，
+    长回答就是一大坨灰底纯文本；卡片用 lark_md 才按 markdown 排版。
+    思考过程放 note（小字灰色），不抢正文的位置。
+    """
+    elements = []
+    if open_id:
+        elements.append({
+            "tag": "div",
+            "text": {"tag": "lark_md", "content": "<at id=%s></at>" % open_id},
+        })
+    elements.append({
+        "tag": "div",
+        "text": {"tag": "lark_md", "content": text},
+    })
+    # 思考全文不贴进回答卡片。用户原话：
+    #   「莫名其妙的尾部贴上全部思考和过程，又占地方又恶心人」
+    # 它已经在状态卡的工具流水里逐条显示（思考 · xxx），这里只留正文。
+
+    bits = []
+    if turn:
+        bits.append("第 %d 轮" % turn)
+    if effort and effort not in ("auto", ""):
+        bits.append("思考深度 %s" % effort)
+
+    card = {
+        "config": {"wide_screen_mode": True, "update_multi": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": "✅ 回答"},
+            "template": "blue",
+        },
+        "elements": elements,
+    }
+    if bits:
+        card["header"]["subtitle"] = {"tag": "plain_text", "content": " · ".join(bits)}
+    return card
+
+
+def on_channel_reply(frame):
+    """agent 的回答正文 → 发到群里。
+
+    视图卡只是状态（在跑 / 空闲 / 排了几个），它永远不含答案。答案走这条：
+    插件在 assistant/message 落定后推 `event: reply`，SSE 线程交给这里。
+    长回答交给 deliver —— 超过 max_inline_lines 行就自动贴成 txt 文件。
+    """
+    if not isinstance(frame, dict):
+        return
+    chat_id = frame.get("chatId") or ""
+    text = (frame.get("text") or "").strip()
+    if not chat_id or not text:
+        return
+    open_id = frame.get("openId") or ""
+    reasoning = (frame.get("reasoning") or "").strip()
+    effort = frame.get("effort") or "auto"
+    turn = frame.get("turn") or 0
+    try:
+        # 卡片有大小上限（约 30 KB），正文太长就别塞了，退回「贴成文件」
+        if len(text) > 3000:
+            deliver(chat_id, text, title="回答", at=(open_id or None))
+        else:
+            card = build_reply_card(text, reasoning, effort, turn, open_id)
+            if not send_card(chat_id, card):
+                # 卡片发失败（比如 markdown 里有非法结构）就退回纯文本，别让回答丢掉
+                log.warning("卡片投递失败，退回纯文本 chat=%s", chat_id)
+                deliver(chat_id, text, title="回答", at=(open_id or None))
+        log.info(
+            "通道回答已投递 chat=%s len=%d reasoning=%d effort=%s",
+            chat_id, len(text), len(reasoning), effort,
+        )
+    except Exception:
+        log.exception("通道回答投递失败 chat=%s", chat_id)
+
+
+def watch_channel(key):
+    if not channel_on() or not key:
+        return
+    try:
+        channel_mod.get().watch(key, on_channel_view, on_channel_reply)
+    except Exception:
+        log.exception("订阅通道视图失败 key=%s", key)
+
+
+def send_via_channel(open_id, chat_id, text, msg):
+    """投给插件。返回 True = 已接单（包括重复投递），False = 请走老路径。"""
+    if not channel_on():
+        return False
+    ch = channel_mod.get()
+
+    intent = "auto"
+    body = text
+    m = re.match(r"^/(\S+)\s*(.*)$", text, re.S)
+    if m and m.group(1) in INTENT_ALIAS:
+        intent = INTENT_ALIAS[m.group(1)]
+        body = (m.group(2) or "").strip()
+        if not body:
+            send(chat_id, "`/%s` 后面要跟内容。" % m.group(1), at=_at_for(chat_id, open_id))
+            return True
+
+    thread_id = getattr(msg, "thread_id", "") or ""
+    root_id = getattr(msg, "root_id", "") or ""
+    tenant = getattr(msg, "tenant_key", "") or "default"
+    mid = getattr(msg, "message_id", "") or ""
+    cwd = cur_cwd(open_id)
+    # 老通道时代这个人的记忆（headless 建的 session）：交给插件优先接续，
+    # 换通道不清零记忆。接不上插件会自己开新的，不会报错。
+    legacy_sid = STATE["sessions"].get(sess_key(open_id, cwd)) or ""
+
+    try:
+        r = ch.ingest(
+            open_id=open_id, chat_id=chat_id, text=body, cwd=cwd,
+            msg_id=mid, thread_id=thread_id, root_id=root_id,
+            tenant_key=tenant, name=who_name(open_id), intent=intent,
+            session_id=legacy_sid,
+        )
+    except Exception as e:
+        log.warning("通道投递失败，退回老路径：%s", e)
+        return False
+
+    key = r.get("key") or channel_mod.session_key(chat_id, thread_id, root_id, tenant)
+    watch_channel(key)
+    log.info(
+        "通道接单 key=%s intent=%s dup=%s msg=%s",
+        key, r.get("intent"), bool(r.get("duplicate")), mid,
+    )
+    return True
+
+
+def channel_stop(open_id, chat_id, msg):
+    """让插件侧中止当前轮但保留已排队的话；成功返回 True。"""
+    if not channel_on():
+        return False
+    try:
+        r = channel_mod.get().control(channel_key_of(msg, chat_id), "stop")
+    except Exception as e:
+        log.warning("通道 stop 失败：%s", e)
+        return False
+    if not r.get("ok"):
+        log.info("通道 stop 没打中：%s", r.get("reason"))
+        return False
+    send(chat_id, "已让 agent 收尾中止（排队的话保留着，随时能接着跑）。",
+         at=_at_for(chat_id, open_id))
+    return True
+
+
+def start_channel():
+    """启动时接上通道；连不上就静默回退老路径。
+
+    注意：会话的 SSE 订阅是**按需**建立的 —— 用户再发一条消息就会自动接上，
+    所以重启后不需要重放历史。健康检查只为看日志排障。
+    """
+    if not channel_mod:
+        log.info("通道模块没装（channel.py 不在），走老路径")
+        return
+    ch = channel_mod.init(CONF)
+    if not ch:
+        return
+    h = ch.health()
+    if not h.get("ok"):
+        log.warning("通道启动健康检查失败（%s）：%s", ch.url, h.get("reason"))
+    else:
+        log.info(
+            "通道模式已启用 %s sessions=%s pending=%s",
+            ch.url, h.get("sessions"), h.get("pending"),
+        )
+
+
 def start_task(open_id, chat_id, text, cwd=None, approved=False, label=None):
     cwd = cwd or cur_cwd(open_id)
     if not _acquire_slot():
@@ -2068,13 +2366,17 @@ def start_task(open_id, chat_id, text, cwd=None, approved=False, label=None):
     _launch(open_id, chat_id, text, cwd, approved, label)
 
 
-def pending_task(open_id, chat_id, text, session_id=None, approved=False, label=None):
+def pending_task(open_id, chat_id, text, session_id=None, approved=False, label=None, msg=None):
     hit = is_dangerous(text)
     if hit and not approved:
         ask_approval(
             open_id, chat_id, "dsh", {"text": text, "label": text[:60]},
             "这句话里有危险动作「%s」" % hit, text[:1200],
         )
+        return
+    # 通道模式：投给常驻 agent 的原生存件箱，成功就不再 spawn 子进程。
+    # 这段放在危险动作审批之后 —— 审批永远由本进程把关，插件不参与。
+    if msg is not None and send_via_channel(open_id, chat_id, text, msg):
         return
     cwd = cur_cwd(open_id)
     q = QUEUES.setdefault(open_id, collections.deque())
@@ -2337,8 +2639,18 @@ def handle_inner(data: P2ImMessageReceiveV1):
             return
 
         raw = text
-        text = re.sub(r"@_user_\d+", "", text).strip()
+        text = re.sub(r"@_user_\d+", "", text)
+        # 飞书 @ 组件给的是占位符，但有人直接手打「@G2 Agent」——一并去掉
+        if BOT_NAME:
+            text = text.replace("@" + BOT_NAME, "")
+        text = text.strip()
+        # 去掉之后只剩 @ 和空白，就等于「只 @ 了一下，没打字」
+        if not re.sub(r"[@\s]", "", text):
+            text = ""
         log.info("text=%r", text)
+        # 记住这句人话，等下有人只发一个 @ 时能接上
+        if text and msg_type == "text" and not text.startswith("/"):
+            _LAST_MSG["%s|%s" % (chat_id, sender)] = {"text": text, "ts": time.time()}
 
         # 群里发图带不了 @：只有「必须 @」的模式才需要先收着等他 @ 一句；
         # 免 @ 模式下图片直接处理（他补的那句话会落进同一个会话，上下文还在）
@@ -2393,10 +2705,15 @@ def handle_inner(data: P2ImMessageReceiveV1):
                 log.info("这句像是对别人说的（%s），不接", why)
                 return
 
-        # 还没 @ 出文字（只 @ 了一下）→ 给提示。引用了东西也算有内容
+        # 只 @ 了一下没打字：接他上一条说过的话；实在没有才提示
         if not text and not att and not quote_note:
-            reply("在。直接说要做什么就行（看 /help）。")
-            return
+            prev = _LAST_MSG.get("%s|%s" % (chat_id, sender)) or {}
+            if prev and time.time() - float(prev.get("ts") or 0) <= _LAST_MSG_TTL:
+                text = prev["text"]
+                log.info("只发了个 @，接上他上一条：%r", text[:60])
+            else:
+                reply("在。直接说要做什么就行（看 /help）。")
+                return
 
         # ② 白名单：先放行自助开通，再拒绝外人
         m = re.match(r"^/claim\s+(\S+)$", text)
@@ -2486,6 +2803,9 @@ def handle_inner(data: P2ImMessageReceiveV1):
                 reply("现在没有在跑的任务。")
             return
         if text in ("停", "/stop", "/停", "中止", "取消"):
+            # 通道模式先让插件 cancel 当前轮（keepInbox：排队的话不漏）
+            if channel_stop(sender, chat_id, msg):
+                return
             t = RUNNING.get(sender)
             if t:
                 t.kill()
@@ -2673,6 +2993,35 @@ def handle_inner(data: P2ImMessageReceiveV1):
             return
 
         if text in ("/queue", "/q", "/排队"):
+            # 通道模式：排队在插件里（DSH 原生收件箱），读真值而不是本地 deque
+            if channel_on():
+                try:
+                    r = channel_mod.get().control(channel_key_of(msg, chat_id), "view")
+                    v = (r or {}).get("view") or {}
+                    lines = []
+                    if v:
+                        lines.append("在跑：%s（第 %s 轮）" % (
+                            "是" if v.get("status") == "running" else "否",
+                            v.get("turn") or 0))
+                        qq = v.get("queue") or []
+                        if qq:
+                            lines.append("排队 %d 个：" % len(qq))
+                            for i, it in enumerate(qq[:10], 1):
+                                mark = "插话" if it.get("target") == "next-step" else "下一轮"
+                                who = it.get("name") or it.get("author") or ""
+                                lines.append("  %d) [%s] %s%s" % (
+                                    i, mark, (it.get("text") or "")[:50],
+                                    (" — " + who) if who else ""))
+                        else:
+                            lines.append("收件箱是空的。")
+                        if v.get("streaming"):
+                            lines.append("正在输出：%s…" % (v.get("streaming") or "")[-120:])
+                    else:
+                        lines.append("这条会话还没开跑过。")
+                    reply("\n".join(lines))
+                    return
+                except Exception:
+                    log.exception("读通道队列失败，回落本地队列")
             q = QUEUES.get(sender) or collections.deque()
             cur = RUNNING.get(sender)
             lines = []
@@ -2693,6 +3042,13 @@ def handle_inner(data: P2ImMessageReceiveV1):
             return
 
         if text in ("/清队", "/clearq", "/clearqueue"):
+            if channel_on():
+                try:
+                    r = channel_mod.get().control(channel_key_of(msg, chat_id), "clearQueue")
+                    reply("收件箱清空了。" if (r or {}).get("ok") else "清队没成功，再试一次。")
+                    return
+                except Exception:
+                    log.exception("通道清队失败，回落本地队列")
             q = QUEUES.get(sender)
             n = len(q) if q else 0
             if q:
@@ -2738,7 +3094,7 @@ def handle_inner(data: P2ImMessageReceiveV1):
             return
 
         # ⑨⑩ 其余全部交给 DSH（群里也先给 DSH 一家）
-        pending_task(sender, chat_id, text, label=label)
+        pending_task(sender, chat_id, text, label=label, msg=msg)
 
     except Exception as e:
         log.exception("handle error")
@@ -2874,6 +3230,25 @@ def on_card_action(data):
             ).start()
             return _build_card_response()
 
+        # 通道进度卡上的按钮：key 是会话键，插件按 key 找到对应 agent
+        ckey = str(val.get("key") or "")
+        if ckey and act in ("stop", "recall", "clearQueue", "view", "new") and channel_on():
+            mid = ""
+            try:
+                ctx_obj = getattr(ev, "context", None)
+                mid = getattr(ctx_obj, "open_message_id", "") if ctx_obj else ""
+            except Exception:
+                pass
+            extra = {}
+            if val.get("messageId"):
+                extra["messageId"] = str(val.get("messageId"))
+            try:
+                r = channel_mod.get().control(ckey, act, **extra)
+                log.info("通道按钮 act=%s key=%s ok=%s", act, ckey, r.get("ok"))
+            except Exception:
+                log.exception("通道按钮失败 act=%s", act)
+            return _build_card_response()
+
         if tok and act:
             resolve_approval(tok, act, by)
     except Exception:
@@ -2907,6 +3282,11 @@ def main():
     except Exception:
         log.exception("启动时写模型覆盖失败，先按 profile 默认跑")
     threading.Thread(target=report_loop, daemon=True).start()
+    # 通道是可选能力：连不上就静默走老路径，绝不影响 bot 本身起来
+    try:
+        start_channel()
+    except Exception:
+        log.exception("通道启动失败，继续走老路径")
 
     builder = lark.EventDispatcherHandler.builder("", "").register_p2_im_message_receive_v1(handle)
     try:
