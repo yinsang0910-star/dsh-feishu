@@ -10,7 +10,7 @@
   },
   "homepage": "https://github.com/yinsang0910-star/dsh-feishu#readme",
   "license": "MIT",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "DeepSeek Harness 的飞书连接设置页：四步向导（建应用 / 凭据 / 选会话 / 自检），支持扫码直接创建飞书应用",
   "keywords": [

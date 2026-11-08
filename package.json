@@ -1,7 +1,7 @@
 {
   "name": "dsh-feishu",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "Feishu/Lark as an operating surface for DeepSeek Harness — MCP server + plugin",
   "license": "MIT",
