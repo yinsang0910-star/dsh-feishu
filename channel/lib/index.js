@@ -35,7 +35,7 @@ export const inject = ['agents', 'agentPresets'];
 /** 卡片刷新硬下限：飞书卡片 PATCH 有频次限制，比这更密只会被限流 */
 const MIN_FLUSH_MS = 500;
 /** 卡片上最多留几条流水（再往前折叠成「前面还有 N 步」） */
-const MAX_STEPS = 8;
+const MAX_STEPS = 4;
 
 /** 工具名 → 中文动词。没收录的回落成「调用 <name>」。 */
 const TOOL_VERB = {
@@ -129,7 +129,9 @@ const DEFAULTS = {
   token: '',
   workspaceRoot: '/home/agent/work',
   collaborativeSteering: true,
-  flushMs: 800,
+  // 卡片刷新节流：800ms 太密，群里是一张卡不停闪，用户的原话「刷新的太多」。
+  // 1.8 秒一刷，照样看得见进度，但不会让人觉得卡在抖。
+  flushMs: 1800,
   stateDir: join(homedir(), '.dsh-feishu-channel'),
   // 程序化 create 出来的 agent 不继承 profile 里的 agent-default-model
   // （那是给默认 agent 用的），必须显式给出，否则第一轮就报
@@ -597,10 +599,18 @@ export function apply(ctx, config = {}) {
 
     // 思考只作为「一条流水」，绝不整段贴进回答卡片。
     // 用户的评价：「莫名其妙的尾部贴上全部思考和过程，又占地方又恶心人」。
+    // 2026-11-08：连正文也不留了 —— 把模型的英文内心独白贴进群里，
+    // 既占地方又是用户看不懂的内容。只记「想过一次」，
+    // 连续思考合并成计数（×N），卡片上就不会被一串「思考 · …」占满。
     const reasoning = reasoningOfMessage(event.data?.message);
-    if (reasoning) {
-      const one = reasoning.replace(/\s+/g, ' ').trim();
-      if (one) pushStep(b, { kind: 'think', verb: '思考', hint: one.length > 90 ? one.slice(0, 90) + '…' : one });
+    if (reasoning && reasoning.trim()) {
+      const last = (b.steps || [])[b.steps.length - 1];
+      if (last && last.kind === 'think') {
+        last.think = (last.think || 1) + 1;
+        last.at = Date.now();
+      } else {
+        pushStep(b, { kind: 'think', verb: '思考', think: 1 });
+      }
     }
 
     // 只有思考没有正文（纯工具调用的那一轮）就不发回答，避免刷屏。

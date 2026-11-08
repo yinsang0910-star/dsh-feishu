@@ -149,6 +149,12 @@ export function renderView(view) {
 
 /** 工具流水一行：`**动词** · 提示 ✅` —— 照 DSH GUI 那个执行面板的写法 */
 function stepLine(st) {
+  // 思考不显示内容，只显示「想过几次」：模型的内心独白贴进群里没人看得懂，
+  // 又长又占地方（用户原话：「思考过程保留的太多…很占地方」）。
+  if (st.kind === 'think') {
+    const n = Number(st.think) || 1;
+    return n > 1 ? `**思考** ×${n}` : '**思考**';
+  }
   const mark = st.ok === true ? ' ✅' : st.ok === false ? ' ❌' : '';
   // hint 里是文件路径/命令，不该整体转义（\_ 在飞书里会显示成下划线但容易看错），
   // 只挡掉会破坏 lark_md 结构的 * 和 [

@@ -124,7 +124,7 @@ DEFAULTS = {
     # 飞书原生通道（dsh-feishu-channel 插件）：把消息投进常驻 agent 的原生
     # 收件箱（next-turn / next-step），而不是每条消息 spawn 一个 dsh-task。
     # off = 完全走老路径（回滚开关）；插件不可达时也会自动退回老路径，消息不丢。
-    "channel_mode": "off",
+
     "channel_url": "http://192.168.1.205:8788",
     "channel_token": "",
 }
@@ -1228,6 +1228,14 @@ STOP_WORDS = (
 # 让「这句是在跟别人说话」的判定走保守分支。
 UNKNOWN_SENDER = "?"
 
+# agent 自己交代「我这轮没有工具」时的特征句。命中就在回答后面补一句怎么办：
+# 用户不该为了「它为什么啥都干不了」去翻日志。
+_NO_TOOL_HINTS = (
+    "工具链出问题", "工具链出问题了", "工具没加载", "工具注册表退化",
+    "没有文件系统执行能力", "没有飞书发送通道", "没有执行能力",
+    "需要重启一下 G2", "重启一下会话",
+)
+
 # 目录真源：agent 上那份 pi-ai 自带的模型清单。用 glob 兜住版本路径变化。
 _CATALOG_GLOB = (
     "/opt/node/lib/node_modules/@deepseek-ai/dsh/node_modules/"
@@ -1747,48 +1755,6 @@ def help_card():
     }
 
 
-def dsh_argv(task):
-    # FEISHU_CHAT_ID 透给 agent 上的 pushfile —— agent 自己不知道要往哪个会话发文件。
-    # 同时写一份兜底文件：万一 dsh 的 bash 工具没继承环境变量，pushfile 还能读到。
-    cmd = (
-        "cd %s 2>/dev/null || cd %s; "
-        "export PATH=\"$HOME/.local/bin:$PATH\"; "
-        "export FEISHU_CHAT_ID=%s; "
-        "mkdir -p ~/.cache/feishu 2>/dev/null && echo %s > ~/.cache/feishu/chat_id 2>/dev/null; "
-        "exec %s"
-        % (
-            shlex.quote(task.cwd), shlex.quote(CONF["agent_root"]),
-            shlex.quote(task.chat_id),
-            shlex.quote(task.chat_id),
-            CONF["dsh_cmd"],
-        )
-    )
-    # 模型/思考强度走单次 patch 覆盖：改的是这一趟，不碰 profile 本体。
-    # auto 档在 start_task 里已算成具体档位（task.effort_used），这里按档挑对应那份 overlay。
-    effort = getattr(task, "effort_used", None) or (CONF.get("reasoning_effort") or "").strip()
-    if effort == "auto":
-        effort = "high"
-    patch_path = override_path(effort) if effort else ""
-    if patch_path:
-        cmd += " --patch %s" % shlex.quote(patch_path)
-    cmd += " --json"
-    if task.session_id:
-        cmd += " --session-id %s" % task.session_id
-    cmd += " -"
-    return ssh_argv(CONF["agent_host"], CONF["agent_user"], CONF["agent_key"]) + [cmd]
-
-
-PHASE_VERB = {
-    "bash": "执行", "shell": "执行", "terminal": "执行",
-    "read": "读文件", "write": "写文件", "edit": "改文件",
-    "glob": "找文件", "grep": "查内容", "ls": "看目录",
-    "web_fetch": "抓网页", "web_search": "搜网页", "fetch": "抓网页",
-    "todo_write": "理步骤", "todo": "理步骤",
-    "skill": "调技能", "subagent": "派子任务", "task": "派子任务",
-    "browser": "开浏览器", "pushfile": "发文件",
-}
-
-_ZH = re.compile(r"[\u4e00-\u9fff]")
 
 
 def _human_step(tool, inp):
@@ -1831,346 +1797,24 @@ def _at_el(open_id):
     return {"tag": "div", "text": {"tag": "lark_md", "content": "<at id=%s></at>" % open_id}}
 
 
-def build_progress_card(task):
-    """整块进度卡：标题 + 任务 + 最近几步 + 脚注。永远只有这一条消息。"""
-    total = len(task.steps_log)
-    tail = task.steps_log[-3:]   # 只留最近 3 步：列满屏没人看，还挤掉正文
-    rows = []
-    if total > len(tail):
-        rows.append("_… 前面 %d 步已完成_" % (total - len(tail)))
-    for s in tail:
-        line = "· **%s**" % _esc(s["verb"])
-        if s.get("hint"):
-            line += " %s" % _esc(s["hint"])
-        rows.append(line)
-    if not rows:
-        rows.append("_正在想…_")
-    head = (getattr(task, "label", None) or task.text or "").replace("\n", " ")[:70]
-    # auto 档要让人看得见判成了哪一档、为什么——不然「自动」等于黑箱
-    auto_note = ""
-    if (CONF.get("reasoning_effort") or "") == "auto":
-        used = getattr(task, "effort_used", "") or ""
-        why = getattr(task, "effort_why", "") or ""
-        if used:
-            auto_note = "　·　reasoningEffort auto → %s（%s）" % (used, why or "常规任务")
-    els = []
-    at = _at_el(getattr(task, "open_id", ""))
-    if at:
-        els.append(at)
-    els.append({"tag": "div", "text": {"tag": "lark_md", "content": "**%s**" % _esc(head)}})
-    els.append({"tag": "hr"})
-    els.append({"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(rows)}})
-    els.append({
-        "tag": "note",
-        "elements": [{
-            "tag": "plain_text",
-            "content": "已用 %s · 第 %d 步 · %s%s"
-                       % (_dur(_seconds_of(task)), max(total, 1),
-                          _short_cwd(task.cwd),
-                          auto_note),
-        }],
-    })
-    return {
-        "config": {"wide_screen_mode": True, "update_multi": True},
-        "header": {
-            "template": "blue",
-            "title": {"tag": "plain_text", "content": "🧠 正在处理"},
-        },
-        "elements": els,
-    }
 
 
-def build_final_card(task, ok, body, note=""):
-    """跑完了，同一张卡改成结果，不另发一条。"""
-    if ok and task.phase == "cancelled":
-        ok, note = False, note or "已中止"
-    icon, title, tpl = ("✅ 完成", 1, "green") if ok else ("⛔ 没成", 0, "red")
-    els = []
-    at = _at_el(getattr(task, "open_id", ""))
-    if at:
-        els.append(at)
-    if body:
-        els.append({"tag": "div", "text": {"tag": "lark_md", "content": body[:3200]}})
-    if note:
-        els.append({"tag": "div", "text": {"tag": "lark_md", "content": "_%s_" % _esc(note)}})
-    if not els:
-        els.append({"tag": "div", "text": {"tag": "lark_md", "content": "_没有输出_"}})
-    els.append({
-        "tag": "note",
-        "elements": [{
-            "tag": "plain_text",
-            "content": "用时 %s · %d 步 · %d 轮 · 工作区 %s"
-                       % (_dur(_seconds_of(task)), max(task.steps, 0), len(task.steps_log),
-                          _short_cwd(task.cwd)),
-        }],
-    })
-    return {
-        "config": {"wide_screen_mode": True, "update_multi": True},
-        "header": {"template": tpl, "title": {"tag": "plain_text", "content": icon}},
-        "elements": els,
-    }
 
 
-def refresh_progress(task, force=False):
-    """节流刷新：2 秒内最多改一次卡片，避免打飞书限频。"""
-    if not task.card_id:
-        return
-    now = time.time()
-    with task.patch_lock:
-        if not force and now - task.last_patch < 2.0:
-            return
-        task.last_patch = now
-    card_patch(task.card_id, build_progress_card(task))
 
 
-def progress(task, tool, inp):
-    task.tool_n += 1
-    verb, hint = _human_step(tool, inp)
-    task.steps_log.append({"n": task.tool_n, "verb": verb, "hint": hint, "t": time.time()})
-    if len(task.steps_log) > 60:
-        del task.steps_log[:-60]
-    refresh_progress(task)
 
 
-def run_dsh_once(task):
-    """跑一轮 dsh，返回 (final_text, session_id, exit_code, stderr, retry_needed)。"""
-    argv = dsh_argv(task)
-    prompt = PROMPT_TMPL.format(
-        who=who_name(task.open_id), cwd=task.cwd, text=task.text
-    )
-    log.info("dsh start open_id=%s session=%s", task.open_id, task.session_id)
-    p = subprocess.Popen(
-        argv,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        bufsize=1,
-        errors="replace",
-    )
-    task.proc = p
-    try:
-        p.stdin.write(prompt)
-        p.stdin.close()
-    except Exception:
-        log.exception("写 stdin 失败")
-
-    final_text = ""
-    sid = ""
-    try:
-        for line in p.stdout:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                ev = json.loads(line)
-            except Exception:
-                continue
-            t = ev.get("type")
-            if t == "session":
-                sid = ev.get("sessionId") or sid
-                if sid and sid != task.session_id:
-                    task.session_id = sid
-                    STATE["sessions"][task.key] = sid
-                    save_state()
-            elif t == "tool_call":
-                progress(task, ev.get("tool"), ev.get("input") or {})
-            elif t == "status" and ev.get("phase") == "step_end":
-                u = ev.get("usage") or {}
-                task.steps += 1
-                task.in_tok += int(u.get("inputTokens") or 0)
-                task.out_tok += int(u.get("outputTokens") or 0)
-                task.cache_tok += int(u.get("cacheReadTokens") or 0)
-            elif t == "final":
-                final_text = ev.get("text") or ""
-    finally:
-        try:
-            stderr = p.stderr.read()
-        except Exception:
-            stderr = ""
-        code = p.wait()
-
-    retry = False
-    if code != 0 and task.session_id and re.search(
-        r"session|not found|unknown id|ENOENT", stderr or "", re.I
-    ):
-        retry = True
-        log.warning("会话 %s 不可用，清掉后重试一轮：%s", task.session_id, (stderr or "")[:200])
-        STATE["sessions"].pop(task.key, None)
-        save_state()
-        task.session_id = None
-    return final_text, sid, code, stderr, retry
 
 
-def worker(task):
-    """跑完一个任务后，交回并发槽，再把等着的任务尽量顶上来。"""
-    try:
-        worker_body(task)
-    except Exception:
-        log.exception("worker_body 抛出未捕获异常")
-    finally:
-        RUNNING.pop(task.open_id, None)
-        _release_slot()
-        pump()
 
 
-def pump():
-    """把空的并发槽填满：不同的人各跑各的，同一个人的队列按先后接上。"""
-    while True:
-        if not _acquire_slot():
-            return
-        picked = None
-        for oid, q in list(QUEUES.items()):
-            if q and oid not in RUNNING:
-                picked = (oid, q.popleft())
-                break
-        if not picked:
-            _release_slot()
-            return
-        oid, nxt = picked
-        log.info("队列继续 open_id=%s 剩 %d 个", oid, len(QUEUES.get(oid) or ()))
-        _launch(oid, nxt["chat_id"], nxt["text"], nxt["cwd"],
-                nxt.get("approved", False), nxt.get("label"))
 
 
-def worker_body(task):
-    RUNNING[task.open_id] = task
-    threading.Thread(target=watchdog, args=(task,), daemon=True).start()
-    started = time.time()
-    ok = False
-    final = ""
-    note = ""
-    try:
-        final, sid, code, stderr, retry = run_dsh_once(task)
-        if retry and not task.cancelled:
-            final, sid, code, stderr, retry = run_dsh_once(task)
-        if task.cancelled:
-            note = "（已中止）"
-        elif code != 0 and not final:
-            ok = False
-            note = "（agent 侧退出码 %d）\n%s" % (code, (stderr or "").strip()[-1200:])
-        else:
-            ok = True
-    except Exception as e:
-        log.exception("worker 异常")
-        note = "（内部错误：%s）" % e
-    finally:
-        task.done.set()
-
-    dur = time.time() - started
-    entry = {
-        "ts": datetime.now().isoformat(timespec="seconds"),
-        "date": datetime.now().strftime("%Y-%m-%d"),
-        "open_id": task.open_id,
-        "name": who_name(task.open_id),
-        "chat_id": task.chat_id,
-        "session": task.session_id or "",
-        "ok": bool(ok),
-        "cancelled": bool(task.cancelled),
-        "dur": round(dur, 1),
-        "steps": task.steps,
-        "in_tok": task.in_tok,
-        "out_tok": task.out_tok,
-        "cache_tok": task.cache_tok,
-        "task": task.text[:300],
-    }
-    try:
-        with LEDGER_PATH.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-    except Exception:
-        log.exception("写账本失败")
-
-    body = (final or "").strip()
-    # 「刚才那件事怎么样了」要能答上来：只留一句结论
-    STATE.setdefault("last", {})[task.open_id] = {
-        "ts": datetime.now().strftime("%m-%d %H:%M"),
-        "ok": bool(ok),
-        "task": (task.text or "")[:60],
-        "body": (body or note or "")[:120].replace("\n", " "),
-        "dur": round(dur, 0),
-    }
-    save_state()
-    if body.startswith("CLARIFY:"):
-        # ⑩ 反问一个具体候选：直接把进度卡变成问句，不另发一条
-        q = body[len("CLARIFY:"):].strip()
-        task.phase = "clarify"
-        card = {
-            "config": {"wide_screen_mode": True, "update_multi": True},
-            "header": {"template": "orange",
-                       "title": {"tag": "plain_text", "content": "❓ 想确认一下"}},
-            "elements": [
-                {"tag": "div", "text": {"tag": "lark_md", "content": _esc(q)}},
-                {"tag": "note", "elements": [{"tag": "plain_text",
-                                              "content": "直接回一句就行 · 已用 %s" % _dur(_seconds_of(task))}]},
-            ],
-        }
-        if not (task.card_id and card_patch(task.card_id, card)):
-            send(task.chat_id, q)
-        return
-
-    if not body:
-        body = note or "（没有拿到回答）"
-    elif note:
-        body = body + "\n\n" + note
-    task.phase = "cancelled" if task.cancelled else ("done" if ok else "failed")
-
-    # ⑤ 结果回填同一张卡；太长才走老的「贴成文件」路径
-    lines = body.count("\n") + 1
-    if task.card_id and lines <= int(CONF["max_inline_lines"]) and len(body) <= 3000:
-        if card_patch(task.card_id, build_final_card(task, ok, body)):
-            # 卡片原地刷新不会推通知，群里静音就看不见「好了」。
-            # 跑得久的补一条带 @ 的短消息（短的就不吵了，进度卡那条通知够用）。
-            if dur >= 30:
-                send(task.chat_id, "%s 好了，在上一条卡片里（用时 %s）"
-                     % ("✅" if ok else "⛔", _dur(dur)), at=task.open_id)
-            return
-    # 卡片 patch 失败（或回答超过 max_inline_lines）时也发卡片：
-    # text 消息里 **加粗**、`代码`、列表都不渲染，就是一大坨灰底纯文本。
-    tail_body = body if len(body) <= 6000 else body[:6000] + "\n\n_（太长，先截到这里）_"
-    if not send_card(task.chat_id, build_final_card(task, ok, tail_body)):
-        deliver(task.chat_id, body, title="结果", at=task.open_id)
 
 
-def watchdog(task):
-    while not task.done.wait(2):
-        now = time.time()
-        # 让卡片上的「已用时」自己往前走，用户随时瞄一眼就知道还活着
-        if now - task.last_patch >= 15 and task.card_id:
-            refresh_progress(task, force=True)
-        if task.extend.is_set():
-            task.extend.clear()
-            task.deadline = now + int(CONF["soft_timeout_sec"])
-            task.asked = False
-            continue
-        if now < task.deadline:
-            continue
-        if not task.asked:
-            task.asked = True
-            task.deadline = now + int(CONF["soft_timeout_sec"])
-            send(
-                task.chat_id,
-                "还在跑（已 %.0f 分钟）…要继续吗？回「继续」再给 %d 分钟，回「停」立刻中止。"
-                % ((now - task.started) / 60, int(CONF["soft_timeout_sec"]) // 60),
-            )
-        else:
-            send(task.chat_id, "已 %.0f 分钟没等到确认，先停下这个任务。" % ((now - task.started) / 60))
-            task.kill()
-            return
 
 
-def _launch(open_id, chat_id, text, cwd, approved=False, label=None):
-    """真正起一条任务。调用前必须已经拿到并发槽。"""
-    sid = STATE["sessions"].get(sess_key(open_id, cwd))
-    task = Task(open_id, chat_id, text, sid, approved, cwd, label)
-    resolve_effort(task)          # auto 档在这里定成具体档位，进度卡上会写明
-    RUNNING[open_id] = task       # 先占住，别让同一人连发两条挤进来
-    # ⑤ 一条进度卡，原地刷新 —— 不再「收到」+ 8 条「· bash: …」刷屏
-    task.card_id = card_create(chat_id, build_progress_card(task)) or ""
-    log.info("task start open_id=%s card=%s cwd=%s effort=%s(%s) 在跑 %d/%d",
-             open_id, task.card_id, cwd, getattr(task, "effort_used", ""),
-             getattr(task, "effort_why", ""), _running_count(),
-             int(CONF.get("max_concurrent") or 3))
-    threading.Thread(target=worker, args=(task,), daemon=True).start()
 
 
 # ─────────────────────────── 通道模式（新路径） ───────────────────────────
@@ -2181,7 +1825,10 @@ def _launch(open_id, chat_id, text, cwd, approved=False, label=None):
 #         （next-turn / next-step），由 DSH 自己在轮次边界和 step 边界领取。
 #         排队位置、流式文本、轮次号全部读真值，不再是估的。
 #
-# 两条路并存由 CONF["channel_mode"] 控制，插件不可达时自动退回老路径，消息不会丢。
+# 2026-11-07：老路径已删除。以前这里是「两条路并存，由 CONF["channel_mode"] 控制，
+# 插件不可达时自动退回老路径」——那个开关本身就是个陷阱：它能被静默关掉，
+# 关掉之后群里看到的卡片突然退回旧模板，而修新通道的人完全不会知道。
+# 现在只有一条路：通道不通就如实报错，不假装还有备胎。
 
 # 只发一个 @ 时，接他上一条说过的话（飞书里很常见：先打字，再补一个 @）
 _LAST_MSG = {}          # "chat_id|open_id" -> {"text": str, "ts": float}
@@ -2201,10 +1848,13 @@ INTENT_ALIAS = {
 
 
 def channel_on():
-    """通道可用吗（插件装了、模式开了、客户端拿到了）。"""
+    """通道可用吗（插件装了、客户端拿到了）。
+
+    2026-11-07：老路径已删除，这里不再看 channel_mode ——
+    留着那个开关只会让人以为还有第二条路可走。
+    插件不在、或者还没握手成功，才算不可用。
+    """
     if not channel_mod:
-        return False
-    if str(CONF.get("channel_mode") or "off").lower() not in ("on", "1", "true", "yes"):
         return False
     return channel_mod.get() is not None
 
@@ -2291,7 +1941,12 @@ def build_reply_card(text, reasoning="", effort="auto", turn=0, open_id=""):
         "elements": elements,
     }
     if bits:
-        card["header"]["subtitle"] = {"tag": "plain_text", "content": " · ".join(bits)}
+        # 「第 N 轮 · 思考深度 high」不进 header.subtitle：飞书会把它拼成标题第二行，
+        # 又小又挤，读起来像排版事故（用户评价：「回复卡片…丑」）。放页脚 note。
+        card["elements"].append({
+            "tag": "note",
+            "elements": [{"tag": "plain_text", "content": " · ".join(bits)}],
+        })
     return card
 
 
@@ -2312,6 +1967,14 @@ def on_channel_reply(frame):
     reasoning = (frame.get("reasoning") or "").strip()
     effort = frame.get("effort") or "auto"
     turn = frame.get("turn") or 0
+    # agent 偶尔会「工具没加载全」——它嘴上说没有执行能力 / 没有发送通道，
+    # 然后交一份什么都干不了的答复。用户看到的是「它坏了」却说不出怎么办。
+    # 这里补一句人话，并给出唯一的自救动作（重开一份会话）。
+    if any(w in text for w in _NO_TOOL_HINTS):
+        text += (
+            "\n\n（这一轮 agent 的工具没加载全，不是你的用法问题。"
+            "工作站进程已经重启过；再遇到就发 /new 重开一份会话，工具会重新注册。）"
+        )
     try:
         # 卡片有大小上限（约 30 KB），正文太长就别塞了，退回「贴成文件」
         if len(text) > 3000:
@@ -2434,17 +2097,6 @@ def start_channel():
         )
 
 
-def start_task(open_id, chat_id, text, cwd=None, approved=False, label=None):
-    cwd = cwd or cur_cwd(open_id)
-    if not _acquire_slot():
-        QUEUES.setdefault(open_id, collections.deque()).append(
-            {"text": text, "chat_id": chat_id, "cwd": cwd, "approved": approved,
-             "label": label})
-        send(chat_id, "⏳ 现在 %d 个任务同时在跑，这个排上队了，空出来自动接上。"
-                      % int(CONF.get("max_concurrent") or 3), at=_at_for(chat_id, open_id))
-        log.info("并发满了，入队 open_id=%s", open_id)
-        return
-    _launch(open_id, chat_id, text, cwd, approved, label)
 
 
 def pending_task(open_id, chat_id, text, session_id=None, approved=False, label=None, msg=None):
@@ -2457,21 +2109,20 @@ def pending_task(open_id, chat_id, text, session_id=None, approved=False, label=
         return
     # 通道模式：投给常驻 agent 的原生存件箱，成功就不再 spawn 子进程。
     # 这段放在危险动作审批之后 —— 审批永远由本进程把关，插件不参与。
-    if msg is not None and send_via_channel(open_id, chat_id, text, msg):
+    # msg 可以是 None：危险动作审批通过后重投（bot.py:1047）手上只有文本，
+    # 没有原始消息对象。send_via_channel 里所有 getattr 都有默认值，
+    # msgId 空就让插件用 uuid 兜底，不会重复投递。
+    if send_via_channel(open_id, chat_id, text, msg):
         return
-    cwd = cur_cwd(open_id)
-    q = QUEUES.setdefault(open_id, collections.deque())
-    busy = open_id in RUNNING
-    if busy or q:
-        # 同一个人的活必须排队：两份进程同时写同一份 session 会打架
-        q.append({"text": text, "chat_id": chat_id, "cwd": cwd, "approved": approved,
-                  "label": label})
-        ahead = len(q) + (1 if busy else 0)
-        send(chat_id, "⏳ 你前面还有 %d 个在跑，这个排上队了，完了自动接上。" % ahead,
-             at=_at_for(chat_id, open_id))
-        log.info("入队 open_id=%s pos=%d", open_id, ahead)
-        return
-    start_task(open_id, chat_id, text, cwd, approved, label)
+    # 2026-11-07：老路径（spawn dsh-task 子进程）已删除。
+    # 通道不通就是不通，如实说，别再假装还有备胎 ——
+    # 那条备胎路上没有思考过程、没有工具流水、补话只能排队，
+    # 而且它会把「服务器在干活」和「群里什么都不显示」拆成两件互不相干的事。
+    log.warning("通道不可用，消息没投出去 open_id=%s", open_id)
+    send(chat_id,
+         "\u26a0\ufe0f 通道没连上（agent 机上的 dsh-web 或插件不在），这条没投出去。\n"
+         "发 /status 看细节；服务器恢复后把这句话再发一次就行。",
+         at=_at_for(chat_id, open_id))
 
 
 # ─────────────────────────── 额度 / 日报 ───────────────────────────
