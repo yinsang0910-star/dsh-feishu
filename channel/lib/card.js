@@ -37,7 +37,8 @@ export function renderView(view) {
   const queue = view.queue || [];
   const ahead = view.queuedAhead ?? queue.filter((q) => q.target === 'next-turn').length;
 
-  const titleBits = [`${PHASE_TEXT[phase]}`];
+  // 标题已经写了「空闲 / 正在处理」，副标题别再重复一遍，只说排队与轮次
+  const titleBits = [];
   if (ahead > 0) titleBits.push(`排队 ${ahead}`);
   if (view.turn > 0) titleBits.push(`第 ${view.turn} 轮`);
 
@@ -63,12 +64,19 @@ export function renderView(view) {
   // 只显示最近几条，前面的折叠成一行计数（卡片大小有上限）。
   const steps = view.steps || [];
   const total = view.stepsTotal || steps.length;
-  if (steps.length) {
+  if (steps.length && phase === 'running') {
     elements.push({ tag: 'hr' });
     const rows = [];
     if (total > steps.length) rows.push(`_… 前面 ${total - steps.length} 步已完成_`);
     for (const st of steps) rows.push(stepLine(st));
     elements.push({ tag: 'div', text: { tag: 'lark_md', content: rows.join('\n') } });
+  } else if (steps.length && phase === 'idle') {
+    // 空闲了还把上一轮的流水挂在「💤 空闲」下面，状态和内容互相打架 ——
+    // 只留一句计数，想看细节等下一轮跑起来时它会重新铺开。
+    elements.push({
+      tag: 'div',
+      text: { tag: 'lark_md', content: `_上一轮 ${total} 步，已经跑完了_` },
+    });
   } else if (phase === 'running') {
     elements.push({ tag: 'hr' });
     elements.push({ tag: 'div', text: { tag: 'lark_md', content: '_正在想…_' } });
@@ -121,7 +129,7 @@ export function renderView(view) {
   const foot = [];
   if (view.stepsTotal) foot.push(`${view.stepsTotal} 步`);
   const ws = String(view.cwd || '').split('/').filter(Boolean).pop();
-  if (ws) foot.push(`工作区 ${ws}`);
+  if (ws) foot.push(ws);
   if (foot.length) {
     elements.push({ tag: 'note', elements: [{ tag: 'plain_text', content: foot.join(' · ') }] });
   }

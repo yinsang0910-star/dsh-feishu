@@ -1905,6 +1905,28 @@ def on_channel_view(view):
             log.info("通道卡片重建 key=%s %s → %s", key, mid, new_mid)
 
 
+_MD_LINK = re.compile(r"\[([^\]\n]{1,120})\]\(([^)\s]{1,300})\)")
+
+
+def _fix_md_links(text):
+    """把「点了没反应」的相对路径链接降级成行内代码。
+
+    飞书 lark_md 支持 `[文字](url)`，但对相对路径会照样渲染成可点链接 ——
+    点下去什么也不发生，正文还被长路径撑开。只放行真正的 URL。
+    """
+
+    def sub(m):
+        label, target = m.group(1), m.group(2)
+        if re.match(r"^(https?://|mailto:)", target, re.I):
+            return m.group(0)
+        # 相对路径：留文字，路径本身用代码块显示（看得出是文件，不假装能点）
+        if label.strip() == target.strip() or not label.strip():
+            return "`%s`" % target
+        return "%s（`%s`）" % (label, target)
+
+    return _MD_LINK.sub(sub, text or "")
+
+
 def build_reply_card(text, reasoning="", effort="auto", turn=0, open_id=""):
     """把 agent 的回答做成卡片。
 
@@ -1920,7 +1942,7 @@ def build_reply_card(text, reasoning="", effort="auto", turn=0, open_id=""):
         })
     elements.append({
         "tag": "div",
-        "text": {"tag": "lark_md", "content": text},
+        "text": {"tag": "lark_md", "content": _fix_md_links(text)},
     })
     # 思考全文不贴进回答卡片。用户原话：
     #   「莫名其妙的尾部贴上全部思考和过程，又占地方又恶心人」

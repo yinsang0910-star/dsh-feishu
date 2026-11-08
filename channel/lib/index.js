@@ -39,24 +39,78 @@ const MAX_STEPS = 4;
 
 /** 工具名 → 中文动词。没收录的回落成「调用 <name>」。 */
 const TOOL_VERB = {
-  read_image: '读取图片',
+  read_image: '看图',
   read: '读取',
   write: '写入',
   edit: '编辑',
-  glob: '查找文件',
-  grep: '搜索内容',
-  bash: '运行命令',
-  pwsh: '运行命令',
-  todo_write: '更新清单',
-  web_search: '搜索网页',
-  web_fetch: '读取网页',
+  glob: '找文件',
+  grep: '搜内容',
+  bash: '执行',
+  pwsh: '执行',
+  todo_write: '列清单',
+  web_search: '搜索',
+  web_fetch: '读网页',
   skill: '加载技能',
   subagent: '派子任务',
-  ask_user_question: '询问用户',
+  ask_user_question: '询问',
+  working_directory: '切目录',
+  // ── 飞书工具：去掉 mcp__feishu__ 前缀后的短名 ──
+  feishu_whoami: '查身份',
+  feishu_send_text: '发消息',
+  feishu_send_card: '发卡片',
+  feishu_send_info_card: '发卡片',
+  feishu_update_card: '更新卡片',
+  feishu_send_file: '发文件',
+  feishu_send_image: '发图片',
+  feishu_download: '下载',
+  feishu_reply: '回复',
+  feishu_recall: '撤回',
+  feishu_forward: '转发',
+  feishu_merge_forward: '合并转发',
+  feishu_pin: '置顶',
+  feishu_reaction: '加表情',
+  feishu_recent: '看群消息',
+  feishu_chats: '列群',
+  feishu_members: '列成员',
+  feishu_chat_files: '列群文件',
+  feishu_chat_update: '改群设置',
+  feishu_chat_create: '建群',
+  feishu_chat_dissolve: '解散群',
+  feishu_chat_announcement: '改群公告',
+  feishu_file_delete: '删文件',
+  feishu_doc_read: '读文档',
+  feishu_doc_blocks: '读文档',
+  feishu_doc_create: '建文档',
+  feishu_doc_append: '写文档',
+  feishu_sheet_read: '读表格',
+  feishu_sheet_write: '写表格',
+  feishu_sheet_create: '建表格',
+  feishu_sheet_meta: '看表格',
+  feishu_bitable_tables: '看多维表格',
+  feishu_bitable_fields: '看字段',
+  feishu_bitable_records: '看记录',
+  feishu_bitable_add: '加记录',
+  feishu_bitable_update: '改记录',
+  feishu_bitable_delete: '删记录',
+  feishu_drive_list: '列云盘',
+  feishu_wiki_spaces: '看知识库',
+  feishu_wiki_node: '看知识库',
+  feishu_permission_member: '改权限',
+  feishu_user_lookup: '查人',
+  feishu_ask: '提问',
 };
 
+/** `mcp__feishu__feishu_send_file` → `feishu_send_file`；普通工具原样返回。 */
+function shortTool(name) {
+  const raw = String(name || '');
+  if (!raw.startsWith('mcp__')) return raw;
+  const parts = raw.split('__');
+  return parts[parts.length - 1] || raw;
+}
+
 function verbOf(name) {
-  return TOOL_VERB[name] || ('调用 ' + name);
+  const raw = String(name || '');
+  return TOOL_VERB[raw] || TOOL_VERB[shortTool(raw)] || shortTool(raw) || '步骤';
 }
 
 /** 从原始 arguments 字符串里挑一个最能说明「在干什么」的字段，截断。 */
@@ -96,11 +150,21 @@ function hintOf(name, argsJson, cwd) {
     }
   }
   v = v.replace(/\s+/g, ' ');
-  // 文件路径换成相对 cwd 的写法，否则「写入 · /home/agent/work/xxx」又长又没重点
-  if (name === 'read' || name === 'write' || name === 'edit' || name === 'read_image' || name === 'glob') {
-    v = relativeHint(v, cwd);
-  }
-  return v.length > 72 ? v.slice(0, 72) + '…' : v;
+  // chat_id / open_id 这类标识符对群里的人没有信息量，别占着一行
+  if (/^(oc|ou|om|omt)_[A-Za-z0-9]+$/.test(v)) v = '';
+  // 路径类参数一律相对化 —— 服务器绝对路径对群里的人没有信息量，
+  // 反而把整行撑满（`/home/agent/work/AAAzjx/assignments/report-writing/…`）。
+  if (v.startsWith('/')) v = relativeHint(v, cwd);
+  v = trimPath(v);
+  return v.length > 48 ? v.slice(0, 48) + '…' : v;
+}
+
+/** `AAAzjx/assignments/report-writing/Report.docx` → `…/report-writing/Report.docx` */
+function trimPath(v) {
+  if (!v.includes('/')) return v;
+  const parts = v.split('/').filter(Boolean);
+  if (parts.length <= 2) return parts.join('/');
+  return '…/' + parts.slice(-2).join('/');
 }
 
 /** 压一条流水进去。kind: 'tool' | 'think' */
