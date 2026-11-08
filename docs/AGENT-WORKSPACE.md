@@ -129,3 +129,54 @@ bash services/agent-workspace/install-mnemon.sh
 
 为什么推荐、验证判据、三个坑与回滚，见 [MNEMON.md](MNEMON.md)。
 
+
+## 通道模式跑在 web profile 上
+
+`channel_mode = on` 时，消息不再 spawn `dsh-task` 子进程，而是投给工作站上
+`dsh web` 里常驻的 `dsh-feishu-channel` 插件。这条链路上的会话由**插件**创建，
+落在 **web profile**，所以 web profile 必须自己满足两件事 —— 否则表现是
+「它说没有 bash」「它说没有飞书工具」，而 `dsh web` 日志一切正常。
+
+### 1. 会话必须有 preset
+
+插件用 `ctx.agentPresets.mount()` 建会话，preset 默认 `standard`。会话头里
+没有 `agentPreset` 字段的（2026-11-05 之前建的）是「裸会话」：只有 profile 级
+第三方插件工具，没有 `bash` / 文件读写 / `read_image` 那套。
+
+`channel/lib/index.js` 在 resume 分支补了一次 mount（失败只 warn 不抛，避免整条
+ingest 变 500）。历史裸会话会这样报出来：
+
+```
+[feishu] 裸会话 feishu-xxxx 补挂 preset=standard 成功
+```
+
+### 2. web profile 要自己挂飞书 MCP
+
+`~/.dsh/profiles/headless/cordis.patch.yml` 里的 `mcp-feishu` 块**不会被 web 继承**。
+web profile 缺这段时，会话里就没有 `mcp__feishu__*`，模型会照实回答「我没有飞书工具」。
+补法（与 headless 逐字一致）：
+
+```yaml
+- insert:
+    - id: mcp-feishu
+      name: "@deepseek-ai/dsh-mcp-client"
+      config:
+        serverName: feishu
+        transport: stdio
+        command: /home/agent/.local/bin/dsh-feishu-mcp
+        args: []
+        toolCallTimeoutMs: 660000
+        failOnStartupError: false
+```
+
+改完 `systemctl --user restart dsh-web.service`，日志里应出现
+`[dsh-feishu-mcp] ready · app=cli_xxx · default_chat=oc_xxx`。
+
+### 排查顺序
+
+1. `systemctl --user is-active dsh-web.service`、`curl -s localhost:8788/health`
+2. 会话文件头 `~/.dsh/sessions/*/feishu-*/session.v4.jsonl.zstd` 里
+   `zstd -dc … | head -1` 看有没有 `"agentPreset":"standard"`
+3. `~/.dsh/dsh-web.log` 里找 `[dsh-feishu-mcp] ready` 与 `补挂 preset`
+4. 群里发「执行 bash 命令 echo OK-BASH 贴输出；再回一行『飞书工具: 有/没有』」
+

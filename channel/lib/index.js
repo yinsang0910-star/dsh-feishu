@@ -259,17 +259,30 @@ export function apply(ctx, config = {}) {
           handle = await resumeAgent(derivedId, agentOptions);
           ctx.logger?.info?.(`[feishu] resumed session ${derivedId}`);
           // 0.1.3 及更早建的会话头里没有 preset，resume 回来是裸的（只有第三方
-          // 插件工具）。顺手补一次，让老会话也拿回 read_image / pwsh / tool-fs。
+          // 插件工具）。`select` 只改会话头上的名字、不装插件，所以裸会话补完还是
+          // 裸的 —— 实测模型自报「工具列表里没有 bash，mcp__feishu__ 也全部
+          // unknown tool」，可它明明能调 working_directory 和 mnemon。
+          // 这里直接对已发布 agent 补一次 mount；mount 成功工具就回来了。
+          // 补不上也不抛错：宁可让它哑着，也不能让整条 ingest 变成 500（用户会
+          // 连「它没接住」都收不到）。下次重启或 /new 会按 create 那条路重装。
           const resumePreset = cfg.agentPreset || 'standard';
+          let composed = false;
           try {
-            if (!ctx.agentPresets.composedPreset(handle.agent.ctx)) {
-              await ctx.agentPresets.select(handle.agent, resumePreset);
-              ctx.logger?.info?.(`[feishu] 老会话补上 preset=${resumePreset}`);
+            composed = Boolean(ctx.agentPresets.composedPreset(handle.agent.ctx));
+          } catch {
+            composed = false;
+          }
+          if (!composed) {
+            try {
+              await ctx.agentPresets.mount(handle.agent.ctx, resumePreset);
+              ctx.logger?.info?.(`[feishu] 裸会话 ${derivedId} 补挂 preset=${resumePreset} 成功`);
+            } catch (err) {
+              ctx.logger?.warn?.(
+                `[feishu] 裸会话 ${derivedId} 补挂 preset 失败（${String(
+                  err?.message || err,
+                )}），这一轮先用现有工具集`,
+              );
             }
-          } catch (err) {
-            ctx.logger?.warn?.(
-              `[feishu] 补 preset 失败（${String(err?.message || err)}），沿用现有工具集`,
-            );
           }
         } catch {
           const presetId = cfg.agentPreset || 'standard';

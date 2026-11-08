@@ -2002,6 +2002,26 @@ def watch_channel(key):
         log.exception("订阅通道视图失败 key=%s", key)
 
 
+def reply_undelivered(open_id, chat_id, err):
+    """消息没送到 agent 时，必须回一句人话。
+
+    以前这里只写一行 log，用户在飞书那头什么也看不到 —— 表现就是
+    「AI 不理我」，而且他再发一遍很可能撞同一个错。
+    """
+    why = str(err or "").strip()
+    if "已绑定目录" in why:
+        tip = "这个会话绑在别的目录上，发 /new 开一份新的就能接着用"
+    elif "Connection refused" in why or "URLError" in why:
+        tip = "工作站那边的通道没起来，稍等一下再发，或者发 /状态 看看"
+    else:
+        tip = "再发一次通常就好；一直这样就发 /状态 看看"
+    try:
+        send(chat_id, "⚠️ 这条没送到 agent（%s）。%s" % (why[:120] or "未知原因", tip),
+             at=_at_for(chat_id, open_id))
+    except Exception:
+        log.exception("连「没送到」都回不了 chat=%s", chat_id)
+
+
 def send_via_channel(open_id, chat_id, text, msg):
     """投给插件。返回 True = 已接单（包括重复投递），False = 请走老路径。"""
     if not channel_on():
@@ -2027,9 +2047,10 @@ def send_via_channel(open_id, chat_id, text, msg):
     # 换通道不清零记忆。接不上插件会自己开新的，不会报错。
     legacy_sid = STATE["sessions"].get(sess_key(open_id, cwd)) or ""
 
-    def _ingest():
+    def _ingest(use_cwd=True):
         return ch.ingest(
-            open_id=open_id, chat_id=chat_id, text=body, cwd=cwd,
+            open_id=open_id, chat_id=chat_id, text=body,
+            cwd=(cwd if use_cwd else ""),
             msg_id=mid, thread_id=thread_id, root_id=root_id,
             tenant_key=tenant, name=who_name(open_id), intent=intent,
             session_id=legacy_sid,
@@ -2038,6 +2059,23 @@ def send_via_channel(open_id, chat_id, text, msg):
     try:
         r = _ingest()
     except Exception as e:
+        # 「会话已绑定目录」不是错误，是状态不同步：这个人的 /cd 记录停在 A，
+        # 而会话是在 B 建的。插件拒绝换目录是对的，bot 这边降级成「不指定」
+        # 就行 —— 让插件沿用它自己绑定的目录，话不至于丢掉。
+        if "已绑定目录" in str(e):
+            log.info("目录记录与会话不一致（%s），改成沿用会话自己的目录", e)
+            try:
+                r = _ingest(use_cwd=False)
+                key = r.get("key") or channel_mod.session_key(
+                    chat_id, thread_id, root_id, tenant)
+                watch_channel(key)
+                log.info("通道接单（沿用会话目录） key=%s intent=%s dup=%s",
+                         key, r.get("intent"), bool(r.get("duplicate")))
+                return True
+            except Exception as e2:
+                log.warning("沿用会话目录仍失败：%s", e2)
+                reply_undelivered(open_id, chat_id, e2)
+                return True
         # 超时不等于没接单：插件可能已经收下，只是回执慢。
         # 它按 msgId 幂等（重复投递回 duplicate=True），所以用同一个 msgId
         # 重投一次是安全的 —— 第一次真成功就拿到 duplicate，第一次真失败就补上。
@@ -2046,8 +2084,9 @@ def send_via_channel(open_id, chat_id, text, msg):
         try:
             r = _ingest()
         except Exception as e2:
-            log.warning("通道重投仍失败，退回老路径：%s", e2)
-            return False
+            log.warning("通道重投仍失败：%s", e2)
+            reply_undelivered(open_id, chat_id, e2)
+            return True
 
     key = r.get("key") or channel_mod.session_key(chat_id, thread_id, root_id, tenant)
     watch_channel(key)
