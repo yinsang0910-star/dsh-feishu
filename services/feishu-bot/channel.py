@@ -317,8 +317,7 @@ def init(conf: dict) -> "Channel | None":
     if h.get("ok"):
         log.info("通道就绪 %s sessions=%s pending=%s", url, h.get("sessions"), h.get("pending"))
     else:
-        log.warning("通道不通（%s）：%s —— 消息会退回老路径", url, h.get("reason"))
-        _INSTANCE = None
+        log.warning("通道暂不可达（%s）：%s —— 保留客户端，回复订阅将自动重连", url, h.get("reason"))
     return _INSTANCE
 
 

@@ -13,10 +13,12 @@
     "build:core": "pnpm --filter @yisang0910/core build",
     "build:single": "pnpm build && esbuild packages/mcp/src/server.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist-single/dsh-feishu-mcp.mjs --log-level=warning",
     "typecheck": "pnpm build:core && pnpm -r typecheck",
-    "test": "pnpm -r test",
+    "test": "pnpm -r test && pnpm test:channel && pnpm test:bot",
     "smoke": "node scripts/smoke.mjs",
     "smoke:write": "node scripts/smoke.mjs --write",
-    "dev": "pnpm --filter @yisang0910/mcp dev"
+    "dev": "pnpm --filter @yisang0910/mcp dev",
+    "test:channel": "node channel/test/selfcheck.mjs && node --test channel/lib/*.test.mjs",
+    "test:bot": "python3 -m unittest discover -s services/feishu-bot -p \"test_*.py\""
   },
   "devDependencies": {
     "@types/node": "^26.6.6",

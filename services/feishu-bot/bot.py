@@ -209,6 +209,7 @@ def load_state():
     st.setdefault("last_chat_id", "")
     st.setdefault("last_report_date", "")
     st.setdefault("last", {})
+    st.setdefault("channel_watch_keys", [])
     return st
 
 
@@ -1837,6 +1838,8 @@ _LAST_MSG_TTL = 60      # 秒；超过这个时间就不接了，免得接到风
 CHANNEL_CARDS = {}          # session key -> 卡片 message_id
 _CHANNEL_CARDS_LOCK = threading.Lock()
 _CHANNEL_FAILS = {}         # session key -> 连续 PATCH 失败次数
+_CHANNEL_RECEIPTS = {}      # (session key, message id) -> receipt reservation
+_CHANNEL_GENERATIONS = {}  # session key -> latest receipt reservation
 
 # /插话 = 下一步生效（steer）；/下一轮 = 排到下一轮（followup）；
 # /备注 = 只补背景不唤醒（inject）。不写「排队」做别名 —— /排队 是查队列。
@@ -1873,8 +1876,7 @@ def channel_key_of(msg, chat_id=""):
 def on_channel_view(view):
     """插件的视图快照 → 一张会自己更新的卡片。
 
-    只做两件事：同一条会话永远改同一张卡；卡片过期（飞书 PATCH 有 14 天上限）
-    或者被删了就重建一张。
+    更新最近一次接单的状态卡；卡片过期或被删后重建。
     """
     if not isinstance(view, dict):
         return
@@ -1886,12 +1888,16 @@ def on_channel_view(view):
     with _CHANNEL_CARDS_LOCK:
         mid = CHANNEL_CARDS.get(key)
         fails = _CHANNEL_FAILS.get(key, 0)
+        generation = _CHANNEL_GENERATIONS.get(key)
     if mid and card_patch(mid, card):
         with _CHANNEL_CARDS_LOCK:
-            _CHANNEL_FAILS[key] = 0
+            if CHANNEL_CARDS.get(key) == mid and _CHANNEL_GENERATIONS.get(key) == generation:
+                _CHANNEL_FAILS[key] = 0
         return
     # 只有连续失败够多次才重建，避免 PATCH 抖动把群里刷成一片新卡片
     with _CHANNEL_CARDS_LOCK:
+        if CHANNEL_CARDS.get(key) != mid or _CHANNEL_GENERATIONS.get(key) != generation:
+            return
         _CHANNEL_FAILS[key] = fails + 1
         rebuild = (not mid) or fails >= 2
     if not rebuild:
@@ -1899,6 +1905,8 @@ def on_channel_view(view):
     new_mid = card_create(chat_id, card)
     if new_mid:
         with _CHANNEL_CARDS_LOCK:
+            if CHANNEL_CARDS.get(key) != mid or _CHANNEL_GENERATIONS.get(key) != generation:
+                return
             CHANNEL_CARDS[key] = new_mid
             _CHANNEL_FAILS[key] = 0
         if mid:
@@ -2019,6 +2027,15 @@ def watch_channel(key):
     if not channel_on() or not key:
         return
     try:
+        with _LOCK:
+            keys = STATE.setdefault("channel_watch_keys", [])
+            if key not in keys:
+                keys.append(key)
+                try:
+                    _write_json(STATE_PATH, STATE)
+                except OSError:
+                    keys.remove(key)
+                    log.exception("订阅记录保存失败，仍尝试接收回答")
         channel_mod.get().watch(key, on_channel_view, on_channel_reply)
     except Exception:
         log.exception("订阅通道视图失败 key=%s", key)
@@ -2042,6 +2059,51 @@ def reply_undelivered(open_id, chat_id, err):
              at=_at_for(chat_id, open_id))
     except Exception:
         log.exception("连「没送到」都回不了 chat=%s", chat_id)
+
+
+def ack_channel_message(key, chat_id, result, message_id="", recovered=False):
+    """Put receipt/progress next to this instruction, not on an old chat card."""
+    if not result.get("ok") or (result.get("duplicate") and not recovered):
+        return
+    reservation = object()
+    receipt_key = (key, message_id)
+    with _CHANNEL_CARDS_LOCK:
+        if message_id and receipt_key in _CHANNEL_RECEIPTS:
+            return
+        if message_id:
+            _CHANNEL_RECEIPTS[receipt_key] = reservation
+            if len(_CHANNEL_RECEIPTS) > 1000:
+                del _CHANNEL_RECEIPTS[next(iter(_CHANNEL_RECEIPTS))]
+        _CHANNEL_GENERATIONS[key] = reservation
+    intent = result.get("intent") or "followup"
+    text = {
+        "steer": "补充已收到，会在下一步处理。",
+        "inject": "上下文已收到；不启动新任务。",
+    }.get(intent, "已收到；排队和执行进度会在这里更新。")
+    card = {
+        "config": {"wide_screen_mode": True, "update_multi": True},
+        "header": {"title": {"tag": "plain_text", "content": "已接收"}, "template": "blue"},
+        "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": text}}],
+    }
+    # Do not hold the shared lock over a network call.
+    try:
+        mid = card_create(chat_id, card)
+        if mid:
+            with _CHANNEL_CARDS_LOCK:
+                if _CHANNEL_GENERATIONS.get(key) == reservation:
+                    CHANNEL_CARDS[key] = mid
+                    _CHANNEL_FAILS[key] = 0
+            return
+    except Exception:
+        log.exception("接单卡片发送异常，尝试文字确认")
+    try:
+        if send(chat_id, text):
+            return
+    except Exception:
+        log.exception("接单确认失败，任务已接收，继续订阅回答")
+    with _CHANNEL_CARDS_LOCK:
+        if _CHANNEL_RECEIPTS.get(receipt_key) is reservation:
+            _CHANNEL_RECEIPTS.pop(receipt_key, None)
 
 
 def send_via_channel(open_id, chat_id, text, msg):
@@ -2078,6 +2140,7 @@ def send_via_channel(open_id, chat_id, text, msg):
             session_id=legacy_sid,
         )
 
+    recovered = False
     try:
         r = _ingest()
     except Exception as e:
@@ -2091,6 +2154,7 @@ def send_via_channel(open_id, chat_id, text, msg):
                 key = r.get("key") or channel_mod.session_key(
                     chat_id, thread_id, root_id, tenant)
                 watch_channel(key)
+                ack_channel_message(key, chat_id, r, mid)
                 log.info("通道接单（沿用会话目录） key=%s intent=%s dup=%s",
                          key, r.get("intent"), bool(r.get("duplicate")))
                 return True
@@ -2105,6 +2169,9 @@ def send_via_channel(open_id, chat_id, text, msg):
         log.warning("通道投递异常（%s），用同一 msgId 重投一次", e)
         try:
             r = _ingest()
+            recovered = True
+            if r.get("duplicate") and intent != "auto":
+                r = {**r, "intent": intent}
         except Exception as e2:
             log.warning("通道重投仍失败：%s", e2)
             reply_undelivered(open_id, chat_id, e2)
@@ -2112,6 +2179,7 @@ def send_via_channel(open_id, chat_id, text, msg):
 
     key = r.get("key") or channel_mod.session_key(chat_id, thread_id, root_id, tenant)
     watch_channel(key)
+    ack_channel_message(key, chat_id, r, mid, recovered=recovered)
     log.info(
         "通道接单 key=%s intent=%s dup=%s msg=%s",
         key, r.get("intent"), bool(r.get("duplicate")), mid,
@@ -2137,17 +2205,15 @@ def channel_stop(open_id, chat_id, msg):
 
 
 def start_channel():
-    """启动时接上通道；连不上就静默回退老路径。
-
-    注意：会话的 SSE 订阅是**按需**建立的 —— 用户再发一条消息就会自动接上，
-    所以重启后不需要重放历史。健康检查只为看日志排障。
-    """
+    """接上通道并恢复回复订阅，重启后不必等用户再发一句。"""
     if not channel_mod:
         log.info("通道模块没装（channel.py 不在），走老路径")
         return
     ch = channel_mod.init(CONF)
     if not ch:
         return
+    for key in list(STATE.get("channel_watch_keys", [])):
+        watch_channel(key)
     h = ch.health()
     if not h.get("ok"):
         log.warning("通道启动健康检查失败（%s）：%s", ch.url, h.get("reason"))

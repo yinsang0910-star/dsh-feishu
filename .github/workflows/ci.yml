@@ -40,7 +40,7 @@ jobs:
       - name: 构建
         run: pnpm build
 
-      - name: 单测（core 117 + gateway 77）
+      - name: 单测（TypeScript、原生通道与机器人反馈）
         run: pnpm test
 
       - name: 网关脚本单测（不连飞书）

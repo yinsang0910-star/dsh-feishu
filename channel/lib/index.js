@@ -32,6 +32,16 @@ import { renderView } from './card.js';
 export const name = 'dsh-feishu-channel';
 export const inject = ['agents', 'agentPresets'];
 
+/** Feishu has no adapter for the browser's blocking question UI. Fail the
+ * tool explicitly so the model can ask in normal text and end its turn.
+ * Never fabricate an answer or an approval on the user's behalf. */
+export function guardFeishuQuestion(request, next, ownsAgent) {
+  if (!request.agent || !ownsAgent(request.agent)) return next();
+  throw new Error('Feishu does not support the blocking ask_user_question UI. '
+    + 'Ask the question in a normal assistant text reply, then end the turn '
+    + 'and wait for the next Feishu message. No user answer or approval was given.');
+}
+
 /** 卡片刷新硬下限：飞书卡片 PATCH 有频次限制，比这更密只会被限流 */
 const MIN_FLUSH_MS = 500;
 /** 卡片上最多留几条流水（再往前折叠成「前面还有 N 步」） */
@@ -220,6 +230,10 @@ export function apply(ctx, config = {}) {
   const bindings = new Map();
   /** @type {Map<string, object>} sessionId → Binding */
   const bySession = new Map();
+
+  ctx.on('user-questions/request', (request, next) =>
+    guardFeishuQuestion(request, next, (agent) => bySession.get(agent?.session?.id)?.agent === agent),
+    { global: true });
 
   // ─────────────────────────────────────────────────────────────
   // 绑定：会话键 ↔ agent ↔ 卡片

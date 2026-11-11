@@ -83,6 +83,26 @@ cd <仓库>\services\feishu-bot
   MCP 调用（`/watch` → `/answer`）。以 `FEUISHU_GATEWAY_NO_WS=1` 运行，不碰长连接，避免和 bot.py 抢事件。
 - **`pushfile`**（agent 上 `~/.local/bin`）：agent 发本地文件给飞书的唯一通道，因为 `dsh --json` 只回传文本流。
 
+## 接单与回复反馈
+
+成功接单后，机器人在当前聊天底部创建确认卡，后续 SSE 进度更新这张卡。
+重复投递只恢复订阅，不重复发卡；原接单回执超时后重试得到 duplicate 时，按消息 ID 补一次确认。`steer` 明确提示补充会在下一步处理，`inject`
+只确认上下文已保存，不声称启动了任务。卡片失败时回退文字，确认失败不会把已接收的任务误报为未投递。
+
+回复订阅键保存在 `state.json` 的 `channel_watch_keys`，接收端启动时自动恢复，
+避免重启后模型已回答、群里却要等用户再发一句才接上。启动时通道暂不可达仍保留客户端，
+订阅线程会自动重连。旧状态文件无需迁移。
+
+本地回归不需要飞书凭据或 Python SDK：
+
+```bash
+python3 services/feishu-bot/test_feedback.py
+python3 -m py_compile services/feishu-bot/bot.py services/feishu-bot/channel.py
+```
+
+测试通过实际接单、状态更新和启动恢复入口运行，mock 仅替代网络与状态文件写入。
+上线仍需验证真实收发、接收确认的位置，以及长任务期间进度更新。
+
 ## 已知缺口（有意不补）
 
 `@larksuiteoapi/lark-mcp` 曾经并存，2026-10-30 撤掉（每轮省 6 个工具、少 109M）。

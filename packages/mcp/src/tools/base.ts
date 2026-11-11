@@ -22,10 +22,16 @@ export function registerBaseTools(server: McpServer, ctx: ToolContext): void {
     },
     async () => {
       try {
-        const [bot, chats] = await Promise.all([
+        const [botResult, chatsResult] = await Promise.allSettled([
           ctx.client.botInfo(),
-          ctx.client.listChats({ pageSize: 20 }).catch(() => []),
+          ctx.client.listChats({ pageSize: 20 }),
         ]);
+        if (botResult.status === 'rejected') throw botResult.reason;
+        const bot = botResult.value;
+        const chats = chatsResult.status === 'fulfilled' ? chatsResult.value : [];
+        const chatsError = chatsResult.status === 'rejected'
+          ? `会话列表查询失败：${chatsResult.reason instanceof Error ? chatsResult.reason.message : String(chatsResult.reason)}`
+          : undefined;
         const defaultChat = ctx.config.defaultChatId
           ? (chats.find((c) => c.chatId === ctx.config.defaultChatId)?.name ??
             ctx.config.defaultChatId)
@@ -35,7 +41,7 @@ export function registerBaseTools(server: McpServer, ctx: ToolContext): void {
           `机器人：${bot.name || '(无名)'}（${bot.openId}）`,
           `默认会话：${defaultChat}`,
           `可发送的群（前 20 个）：${
-            chats.length ? chats.map((c) => c.name || c.chatId).join('、') : '（还没进任何群）'
+            chatsError ?? (chats.length ? chats.map((c) => c.name || c.chatId).join('、') : '（还没进任何群）')
           }`,
         ];
         return ok(lines.join('\n'), {
@@ -43,6 +49,7 @@ export function registerBaseTools(server: McpServer, ctx: ToolContext): void {
           bot_name: bot.name,
           default_chat_id: ctx.config.defaultChatId ?? null,
           chats: chats.map((c) => ({ chat_id: c.chatId, name: c.name })),
+          ...(chatsError ? { chats_error: chatsError } : {}),
         });
       } catch (err) {
         if (err instanceof FeishuApiError && err.isPermission) {
