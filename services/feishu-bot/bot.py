@@ -2401,14 +2401,20 @@ def _is_me(sender_id):
     return sender_id == BOT_OPEN_ID or (APP_ID and sender_id == APP_ID)
 
 
-def _chatter_reason(msg, parent_sender):
+def _chatter_reason(msg, parent_sender, sender_id=""):
     """群里这句是在跟别人说话，还是在使唤机器人？返回原因（空串=该接）。
 
     免 @ 之后机器人会听到群里每一句话。两个人互相接话、@ 别人的话，
-    它插嘴只会碍事——只在「回它的话」「@ 它」「谁也没指向」这三种情况下才接。
+    它插嘴只会碍事——只在「回它的话」「回自己的话」「@ 它」「谁也没指向」时才接。
+
+    2026-11-10 踩过的坑：用户发完一份 PDF，紧接着引用**自己那条文件消息**说
+    「看一下介绍部分，主要讲的什么问题」，被判成「回复的是别人的消息」直接丢掉。
+    引用自己的图片/文件来提问是最常见的用法，不能拦。
     """
     if _is_me(parent_sender):
         return ""                       # 在回我的消息，那是给我看的
+    if parent_sender and sender_id and parent_sender == sender_id:
+        return ""                       # 引用自己刚发的东西来提问
     if parent_sender:
         return "回复的是别人的消息"
     others = [o for o in _mention_ids(msg) if not _is_me(o)]
@@ -2559,7 +2565,7 @@ def handle_inner(data: P2ImMessageReceiveV1):
         # 群里免 @ 之后能听到每一句话，但别人互相接话时不该插嘴。
         # 判定：回的是我的消息 / @ 了我 / 谁也没指向 → 接；回复别人 / @ 别人 → 不接。
         if chat_type in ("group", "topic") and not mentioned_bot(msg):
-            why = _chatter_reason(msg, parent_sender)
+            why = _chatter_reason(msg, parent_sender, sender)
             if why:
                 log.info("这句像是对别人说的（%s），不接", why)
                 return
