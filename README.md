@@ -87,6 +87,16 @@
 
 ### 方式二：命令行安装
 
+只装 DSH 里的飞书设置页（不装 MCP、不跑安装器）时，直接从本仓库装插件包：
+
+```bash
+dsh plugin --profile web add "github:yinsang0910-star/dsh-feishu#path:packages/dsh-plugin"
+```
+
+`#path:packages/dsh-plugin` 不能省——仓库根是 pnpm workspace，只有这个子目录是 DSH bundle（`dsh.bundle.patch` + `dsh.client.platform: web`，`dist/` 已随仓库提交，装完不需要构建）。装完重启 DSH，设置里会多出「飞书」页。
+
+要连机器人一起装，再跑下面的安装器：
+
 ```bash
 pnpm install && pnpm build
 
