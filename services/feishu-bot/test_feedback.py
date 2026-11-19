@@ -36,6 +36,8 @@ class FeedbackTest(unittest.TestCase):
         self.bot._CHANNEL_FAILS.clear()
         self.bot._CHANNEL_RECEIPTS.clear()
         self.bot._CHANNEL_GENERATIONS.clear()
+        self.bot._CHANNEL_VIEWS.clear()
+        self.bot._CHANNEL_VIEW_LOCKS.clear()
         self.patches = [
             patch.object(self.bot, "channel_mod", SimpleNamespace(get=lambda: self.ch, init=lambda _: self.ch)),
             patch.object(self.bot, "card_create", return_value="new-card"),
@@ -59,6 +61,52 @@ class FeedbackTest(unittest.TestCase):
         self.bot.on_channel_view({"key": "group", "chatId": "chat", "card": {"status": "running"}})
         self.bot.card_patch.assert_called_with("new-card", {"status": "running"})
         self.ch.watch.assert_called_once()
+
+    def test_terminal_view_during_receipt_creation_is_applied_to_new_card(self):
+        idle = {"key": "group", "chatId": "chat", "card": {"status": "idle"}}
+        def create(*_):
+            self.bot.on_channel_view(idle)
+            return "new-card"
+        self.bot.card_create.side_effect = create
+        self.submit()
+        self.bot.card_patch.assert_called_with("new-card", idle["card"])
+
+    def test_slow_running_patch_cannot_finish_after_idle_patch(self):
+        running_started = threading.Event()
+        release_running = threading.Event()
+        idle_queued = threading.Event()
+        completed = []
+        def apply(_mid, card):
+            if card["status"] == "running":
+                running_started.set()
+                release_running.wait(2)
+            completed.append(card["status"])
+            return True
+        self.bot.card_patch.side_effect = apply
+        original_refresh = self.bot._refresh_channel_view
+        def refresh(key):
+            if threading.current_thread() is idle:
+                idle_queued.set()
+            original_refresh(key)
+        running = threading.Thread(target=self.bot.on_channel_view, args=(
+            {"key": "group", "chatId": "chat", "card": {"status": "running"}},))
+        idle = threading.Thread(target=self.bot.on_channel_view, args=(
+            {"key": "group", "chatId": "chat", "card": {"status": "idle"}},))
+        with patch.object(self.bot, "_refresh_channel_view", side_effect=refresh):
+            running.start()
+            try:
+                self.assertTrue(running_started.wait(2))
+                idle.start()
+                self.assertTrue(idle_queued.wait(2))
+                self.assertEqual(completed, [])
+            finally:
+                release_running.set()
+                running.join(2)
+                if idle.ident is not None:
+                    idle.join(2)
+        self.assertFalse(running.is_alive())
+        self.assertFalse(idle.is_alive())
+        self.assertEqual(completed, ["running", "idle"])
 
     def test_concurrent_receipts_finishing_backwards_keep_latest_target(self):
         first_started = threading.Event()

@@ -26,16 +26,38 @@ test('registered question handler guards the actual bound agent after HTTP inges
   const stateDir = await mkdtemp(join(tmpdir(), 'feishu-question-'));
   const handlers = new Map();
   const cleanup = [];
+  let viewReady;
   let ready;
   const listening = new Promise((resolve) => { ready = resolve; });
+  let composed = false;
+  let mounts = 0;
+  let resumes = 0;
   const agent = {
     session: {id: 'bound-session'}, status: 'idle',
+    ctx: {}, options: {model: 'test-model'},
     inbox: {nextTurn: [], nextStep: [], hasPending: () => false},
     followup() {},
   };
   apply({
-    agents: {get: () => agent}, agentPresets: {},
+    agents: {
+      get: () => undefined,
+      resume: async ({resumeSessionId}) => {
+        assert.equal(resumeSessionId, 'bound-session');
+        resumes += 1;
+        return {agent};
+      },
+    },
+    agentPresets: {
+      composedPreset: (ctx) => { assert.equal(ctx, agent.ctx); return composed; },
+      mount: async (ctx, preset) => {
+        assert.equal(ctx, agent.ctx);
+        assert.equal(preset, 'standard');
+        composed = true;
+        mounts += 1;
+      },
+    },
     on(event, handler) { handlers.set(event, handler); },
+    emit(event, payload) { if (event === 'feishu/view') viewReady?.(payload.view); },
     effect(fn) { cleanup.push(fn()); },
     logger: {info: ready, warn() {}},
   }, {host: '127.0.0.1', port, stateDir});
@@ -50,8 +72,37 @@ test('registered question handler guards the actual bound agent after HTTP inges
   });
   assert.equal(response.status, 200);
   assert.equal((await response.json()).ok, true);
+
   const handler = handlers.get('user-questions/request');
   assert.throws(() => handler({agent}, () => assert.fail('must not wait on web UI')), /normal assistant text reply/);
   // Session ids alone must not hijack a different live agent's question.
   assert.equal(handler({agent: {session: {id: 'bound-session'}}}, () => 'web'), 'web');
+  await t.test('blocked turns publish a failure view and a new turn clears it', async () => {
+    const pushed = new Promise((resolve) => { viewReady = resolve; });
+    handlers.get('session/event')(agent.session, {
+      type: 'turn/end', data: {reason: {kind: 'blocked'}},
+    });
+    assert.match(JSON.stringify((await pushed).card), /执行在进入模型步骤前被阻止/);
+    const readView = async () => (await (await fetch(`http://127.0.0.1:${port}/control`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({type: 'view', key: 'lark:default:test-chat'}),
+    })).json()).view;
+    assert.match((await readView()).error, /可能会话已归档或前置检查未通过/);
+    agent.status = 'running';
+    handlers.get('agent/status')({agent, status: 'running'});
+    assert.equal((await readView()).error, null);
+  });
+  await t.test('legacy resume mounts missing preset once and preserves mounted presets', async () => {
+    assert.equal(resumes, 1);
+    assert.equal(mounts, 1);
+    agent.status = 'idle';
+    const again = await fetch(`http://127.0.0.1:${port}/ingest`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({chatId: 'test-chat', rootId: 'new-root', msgId: 'second-message',
+        openId: 'test-user', text: 'hello again', resumeSessionId: 'bound-session'}),
+    });
+    assert.equal((await again.json()).ok, true);
+    assert.equal(resumes, 2);
+    assert.equal(mounts, 1);
+  });
 });

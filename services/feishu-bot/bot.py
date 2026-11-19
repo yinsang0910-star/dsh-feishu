@@ -1840,6 +1840,8 @@ _CHANNEL_CARDS_LOCK = threading.Lock()
 _CHANNEL_FAILS = {}         # session key -> 连续 PATCH 失败次数
 _CHANNEL_RECEIPTS = {}      # (session key, message id) -> receipt reservation
 _CHANNEL_GENERATIONS = {}  # session key -> latest receipt reservation
+_CHANNEL_VIEWS = {}         # session key -> latest SSE view
+_CHANNEL_VIEW_LOCKS = {}    # session key -> serialize card updates
 
 # /插话 = 下一步生效（steer）；/下一轮 = 排到下一轮（followup）；
 # /备注 = 只补背景不唤醒（inject）。不写「排队」做别名 —— /排队 是查队列。
@@ -1886,9 +1888,27 @@ def on_channel_view(view):
     if not key or not card or not chat_id:
         return
     with _CHANNEL_CARDS_LOCK:
+        _CHANNEL_VIEWS[key] = view
+    _refresh_channel_view(key)
+
+
+def _refresh_channel_view(key):
+    # Serialize PATCH calls so a slow running update cannot overwrite a later idle view.
+    with _CHANNEL_CARDS_LOCK:
+        update_lock = _CHANNEL_VIEW_LOCKS.setdefault(key, threading.Lock())
+    with update_lock:
+        _patch_channel_view(key)
+
+
+def _patch_channel_view(key):
+    with _CHANNEL_CARDS_LOCK:
+        view = _CHANNEL_VIEWS.get(key)
+        if not view:
+            return
         mid = CHANNEL_CARDS.get(key)
         fails = _CHANNEL_FAILS.get(key, 0)
         generation = _CHANNEL_GENERATIONS.get(key)
+    chat_id, card = view["chatId"], view["card"]
     if mid and card_patch(mid, card):
         with _CHANNEL_CARDS_LOCK:
             if CHANNEL_CARDS.get(key) == mid and _CHANNEL_GENERATIONS.get(key) == generation:
@@ -2093,6 +2113,7 @@ def ack_channel_message(key, chat_id, result, message_id="", recovered=False):
                 if _CHANNEL_GENERATIONS.get(key) == reservation:
                     CHANNEL_CARDS[key] = mid
                     _CHANNEL_FAILS[key] = 0
+            _refresh_channel_view(key)
             return
     except Exception:
         log.exception("接单卡片发送异常，尝试文字确认")
